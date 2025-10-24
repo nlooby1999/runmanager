@@ -36,7 +36,8 @@
 
     const logoutBtn = document.getElementById('auth_logout');
 
-    const MANIFEST_HEADERS = ['Run','Drop','Zone','Date','Sales Order','Name','Address','Suburb','Postcode','Phone Number','FP','CH','FL','Weight','Type'];
+    const MANIFEST_HEADERS = ['Run','Drop','Zone','FP','Type','Sales Order','Name','Address','Suburb','Postcode','CH','FL','Weight','Date'];
+    const DISPLAY_INDEX_MAP = [0,1,2,10,14,4,5,6,7,8,11,12,13,3];
     const normSO = v => (v == null ? '' : String(v).trim().toUpperCase());
     const coerceCount = v => {
       if (v == null || v === '') return 0;
@@ -47,13 +48,11 @@
     };
 
     function manifestRowToCells(row){
-      const cells = Array.isArray(row) ? [...row] : [];
-      if (cells.length < MANIFEST_HEADERS.length){
-        while(cells.length < MANIFEST_HEADERS.length) cells.push('');
-      }else if(cells.length > MANIFEST_HEADERS.length){
-        cells.length = MANIFEST_HEADERS.length;
-      }
-      return cells.map(cell => (cell ?? '') === '' ? '-' : String(cell));
+      const source = Array.isArray(row) ? row : [];
+      return DISPLAY_INDEX_MAP.map(idx=>{
+        const value = source[idx];
+        return (value == null || value === '') ? '-' : String(value);
+      });
     }
 
     function computeManifestData(table){
@@ -85,6 +84,22 @@
       return entries;
     }
 
+    function rowHasMeaningfulData(row){
+      if (!Array.isArray(row)) return false;
+      return row.some(cell=>{
+        if (cell == null) return false;
+        if (typeof cell === 'number') return !Number.isNaN(cell);
+        return String(cell).trim() !== '';
+      });
+    }
+
+    function sanitizeTableData(table){
+      if (!Array.isArray(table) || !table.length) return [];
+      const header = Array.isArray(table[0]) ? table[0] : [];
+      const body = table.slice(1).filter(rowHasMeaningfulData);
+      return [header, ...body];
+    }
+
     async function readWorkbookFile(file){
       const buf = await file.arrayBuffer();
       const wb  = XLSX.read(buf,{type:'array'});
@@ -108,8 +123,18 @@
       setTimeout(()=>el.remove(),1600);
     }
 
+    function escapeHTML(value){
+      return String(value ?? '')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+    }
+
     async function storeFinalDataForUser(userId, tableData, filesMeta, manifestData){
-      const manifest = manifestData || computeManifestData(tableData);
+      const sanitizedTable = sanitizeTableData(tableData);
+      const manifest = manifestData || computeManifestData(sanitizedTable);
       if (SUPABASE_ENABLED){
         const { error } = await supabase
           .from('depot_manifests')
@@ -117,7 +142,7 @@
             depot_id: userId,
             kind: 'final',
             payload: {
-              tableData,
+              tableData: sanitizedTable,
               filesMeta,
               generated: manifest.generated,
               rowLookup: manifest.rowLookup
@@ -127,7 +152,7 @@
         if (error) throw error;
       } else {
         const base = suffix => `drm_${userId}_final_${suffix}`;
-        localStorage.setItem(base('table_v2'), JSON.stringify(tableData));
+        localStorage.setItem(base('table_v2'), JSON.stringify(sanitizedTable));
         localStorage.setItem(base('generated_v2'), JSON.stringify(manifest.generated));
         localStorage.setItem(base('rowlookup_v2'), JSON.stringify(manifest.rowLookup));
         localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
@@ -137,12 +162,14 @@
 
     async function storeGlueDataForUser(userId, scheduleEntries, filesMeta, options = {}){
       const { tableData = [], manifest = null } = options || {};
-      const generated = manifest?.generated || {};
-      const rowLookup = manifest?.rowLookup || {};
+      const sanitizedTable = sanitizeTableData(tableData);
+      const manifestSafe = manifest || computeManifestData(sanitizedTable);
+      const generated = manifestSafe?.generated || {};
+      const rowLookup = manifestSafe?.rowLookup || {};
       const payload = {
         scheduleEntries,
         filesMeta,
-        tableData,
+        tableData: sanitizedTable,
         generated,
         rowLookup
       };
@@ -160,7 +187,7 @@
         const base = suffix => `drm_${userId}_glue_${suffix}`;
         localStorage.setItem(base('schedule_v1'), JSON.stringify(scheduleEntries));
         localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
-        localStorage.setItem(base('table_v2'), JSON.stringify(tableData));
+        localStorage.setItem(base('table_v2'), JSON.stringify(sanitizedTable));
         localStorage.setItem(base('generated_v2'), JSON.stringify(generated));
         localStorage.setItem(base('rowlookup_v2'), JSON.stringify(rowLookup));
         localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
@@ -193,7 +220,7 @@
 
     async function addReport(report){
       if (SUPABASE_ENABLED){
-        const { error } = await supabase.from('depot_reports').insert({
+        const payload = {
           id: report.id,
           depot_id: report.depotId,
           depot_name: report.depotName,
@@ -201,7 +228,11 @@
           rows: report.rows,
           filename: report.filename,
           csv: report.csv
-        });
+        };
+        if (report.created){
+          payload.created_at = report.created;
+        }
+        const { error } = await supabase.from('depot_reports').insert(payload);
         if (error) throw error;
         window.dispatchEvent(new CustomEvent('drm:reports-updated'));
         return;
@@ -400,6 +431,7 @@
         lookup:  baseKey('rowlookup_v2'),
         files:   baseKey('files_meta_v2'),
         schedule:baseKey('schedule_v1'),
+        notes:   baseKey('notes_v1'),
       };
 
       let tableData = [];
@@ -412,6 +444,7 @@
       let filteredSO = null;
       let lastScanInfo = null;
       let autoScanTimer = null;
+      let notes = {};
       const AUTOSCAN_DELAY = 120;
       const MIN_BARCODE_LENGTH = 11;
 
@@ -555,6 +588,7 @@
           const plainScanned = {};
           Object.entries(scanned).forEach(([k,v])=>plainScanned[k]=Array.from(v));
           localStorage.setItem(KEYS.scanned, JSON.stringify(plainScanned));
+          localStorage.setItem(KEYS.notes, JSON.stringify(notes));
           if (hasRunsheetUI){
             localStorage.setItem(KEYS.table, JSON.stringify(tableData));
             localStorage.setItem(KEYS.gen, JSON.stringify(generated));
@@ -578,6 +612,8 @@
             const plain = JSON.parse(storedScanned) || {};
             Object.entries(plain).forEach(([k,arr])=>scanned[k]=new Set(arr||[]));
           }
+          const notesRaw = localStorage.getItem(KEYS.notes);
+          notes = notesRaw ? (JSON.parse(notesRaw) || {}) : {};
 
           if (hasRunsheetUI){
             const t = localStorage.getItem(KEYS.table);
@@ -589,6 +625,8 @@
               generated = g ? JSON.parse(g) || {} : {};
               rowLookup = l ? JSON.parse(l) || {} : {};
               loadedFiles = f ? JSON.parse(f) : [];
+              tableData = sanitizeTableData(tableData);
+              pruneNotes();
               if ((!g || !l) && tableData.length){
                 const manifest = computeManifestData(tableData);
                 generated = manifest.generated;
@@ -634,7 +672,7 @@
       }
 
       function reset(clear=false){
-        tableData=[]; generated={}; scanned={}; rowLookup={}; loadedFiles=[];
+        tableData=[]; generated={}; scanned={}; rowLookup={}; loadedFiles=[]; notes={};
         if (hasScheduleUI) scheduleEntries=[];
         filteredSO = null;
         lastScanInfo = null;
@@ -655,6 +693,7 @@
             localStorage.removeItem(KEYS.schedule);
           }
           localStorage.removeItem(KEYS.scanned);
+          localStorage.removeItem(KEYS.notes);
         }
         updateFileMeta();
         refreshSchedule({ fetchRemote: false });
@@ -663,22 +702,30 @@
 
       function renderTable(){
         if (!hasRunsheetUI || !tableWrap) return;
+        pruneNotes();
         const headers = MANIFEST_HEADERS;
         let html = '<div class="table-scroll"><table><thead><tr>';
-        headers.forEach(h=> html += `<th>${h}</th>`);
-        html += '</tr></thead><tbody>';
+        headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
+        html += '<th>Notes</th></tr></thead><tbody>';
         tableData.slice(1).forEach((row, idx)=>{
-          html += `<tr id="${prefix}-row-${idx}">`;
+          html += `<tr id="${prefix}-row-${idx}" data-row-index="${idx}">`;
           const cells = manifestRowToCells(row);
-          cells.forEach(cell=> html += `<td>${cell}</td>`);
+          cells.forEach(cell=> html += `<td>${escapeHTML(cell)}</td>`);
+          html += `<td class="notes-cell">${buildNotesCellContent(idx, hasRunsheetUI)}</td>`;
           html += '</tr>';
         });
         html += '</tbody></table></div>';
         tableWrap.innerHTML = html;
       }
 
+      if (hasRunsheetUI && tableWrap && !tableWrap.dataset.notesBound){
+        tableWrap.addEventListener('click', handleTableClick);
+        tableWrap.dataset.notesBound = 'true';
+      }
+
       function renderScheduleTable(){
         if (!hasScheduleUI || !scheduleWrap) return;
+        pruneNotes();
         const headers = MANIFEST_HEADERS;
         const entries = filteredSO ? scheduleEntries.filter(entry => entry.so === filteredSO) : scheduleEntries;
         if (!entries.length){
@@ -691,8 +738,8 @@
           return;
         }
         let html = '<div class="table-scroll"><table><thead><tr>';
-        headers.forEach(h=> html += `<th>${h}</th>`);
-        html += '</tr></thead><tbody>';
+        headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
+        html += '<th>Notes</th></tr></thead><tbody>';
         entries.forEach(entry=>{
           const idxs = rowLookup[entry.so] || [];
           const route = firstRunDrop(entry.so);
@@ -702,15 +749,16 @@
             idxs.forEach(idx=>{
               const row = tableData[idx+1] || [];
               const cells = manifestRowToCells(row);
-              html += '<tr>' + cells.map(cell=>`<td>${cell}</td>`).join('') + '</tr>';
+              const noteCell = buildNotesCellContent(idx, false);
+              html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + `<td class="notes-cell">${noteCell}</td></tr>`;
             });
           }else{
             const cells = new Array(headers.length).fill('-');
             cells[0] = runText;
             cells[1] = dropText;
-            cells[4] = entry.so || '-';
-            cells[5] = entry.createdFrom || '-';
-            html += '<tr>' + cells.map(cell=>`<td>${cell}</td>`).join('') + '</tr>';
+            cells[4] = entry.createdFrom || '-';
+            cells[5] = entry.so || '-';
+            html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + '<td class="notes-cell"><span class="note-placeholder">-</span></td></tr>';
           }
         });
         html += '</tbody></table></div>';
@@ -726,6 +774,7 @@
           const f = localStorage.getItem(KEYS.files);
           const sched = localStorage.getItem(KEYS.schedule);
           const scannedRaw = localStorage.getItem(KEYS.scanned);
+          const notesRaw = localStorage.getItem(KEYS.notes);
           if (t) tableData = JSON.parse(t) || tableData;
           if (g) generated = JSON.parse(g) || generated;
           if (l) rowLookup = JSON.parse(l) || rowLookup;
@@ -741,9 +790,12 @@
               scanned[key] = new Set(arr || []);
             });
           }
+          notes = notesRaw ? (JSON.parse(notesRaw) || {}) : {};
         }catch{
           // ignore malformed localStorage values
         }
+        tableData = sanitizeTableData(tableData);
+        pruneNotes();
       }
 
       async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false } = {}){
@@ -755,9 +807,17 @@
         filteredSO = null;
         lastScanInfo = null;
         scanned = {};
+        notes = {};
 
         // fallback local data first
         loadFromLocalStorage();
+        if (!hasRunsheetUI){
+          try{
+            const finalKey = suffix => `drm_${currentUser?.id || 'anon'}_final_${suffix}`;
+            const finalNotesRaw = localStorage.getItem(finalKey('notes_v1'));
+            if (finalNotesRaw) notes = JSON.parse(finalNotesRaw) || notes;
+          }catch{}
+        }
 
         if (fetchRemote && SUPABASE_ENABLED){
           try{
@@ -788,12 +848,16 @@
           }
         }
 
-        if (prefix === 'final' && tableData.length){
-          if (!Object.keys(generated).length || !Object.keys(rowLookup).length){
-            const manifest = computeManifestData(tableData);
-            generated = manifest.generated;
-            rowLookup = manifest.rowLookup;
-          }
+        tableData = sanitizeTableData(tableData);
+        pruneNotes();
+
+        if (tableData.length){
+          const manifest = computeManifestData(tableData);
+          generated = manifest.generated;
+          rowLookup = manifest.rowLookup;
+        }else{
+          generated = {};
+          rowLookup = {};
         }
 
         if (prefix === 'glue' && !scheduleEntries.length && tableData.length){
@@ -817,6 +881,9 @@
         updateFileMeta();
         updateScheduleMeta();
         renderTable();
+        if (hasRunsheetUI){
+          Object.keys(scanned).forEach(updateRowHighlight);
+        }
         renderScheduleTable();
         updateScanAvailability();
         updateSummaryDisplay();
@@ -864,6 +931,120 @@
         },50);
       }
 
+      function resetScanInput(){
+        if (autoScanTimer){
+          clearTimeout(autoScanTimer);
+          autoScanTimer = null;
+        }
+        if (scanEl) scanEl.value = '';
+      }
+
+      function getRowKey(idx){
+        return String(idx);
+      }
+
+      function pruneNotes(){
+        const maxIdx = Math.max(0, tableData.length - 1);
+        Object.keys(notes).forEach(key=>{
+          const idx = Number(key);
+          if (!Number.isFinite(idx) || idx < 0 || idx >= maxIdx){
+            delete notes[key];
+          }
+        });
+      }
+
+      function buildNotesCellContent(idx, includeActions){
+        const key = getRowKey(idx);
+        const noteText = notes[key] || '';
+        const hasNote = noteText.trim() !== '';
+        const display = hasNote
+          ? `<span class="note-text">${escapeHTML(noteText)}</span>`
+          : '<span class="note-placeholder">No note</span>';
+        let html = `<div class="note-display">${display}</div>`;
+        if (includeActions){
+          const btnLabel = hasNote ? 'Edit Note' : 'Add Note';
+          html += '<div class="note-actions">';
+          html += `<button type="button" class="note-btn" data-row="${idx}">${btnLabel}</button>`;
+          html += `<button type="button" class="manual-btn" data-row="${idx}">Manual Mark</button>`;
+          html += '</div>';
+        }
+        return html;
+      }
+
+      function updateRowNoteCell(idx){
+        const tr = document.getElementById(`${prefix}-row-${idx}`);
+        if (!tr) return;
+        const cell = tr.querySelector('.notes-cell');
+        if (!cell) return;
+        cell.innerHTML = buildNotesCellContent(idx, hasRunsheetUI);
+      }
+
+      function editNoteForRow(idx){
+        const key = getRowKey(idx);
+        const existing = notes[key] || '';
+        const input = prompt('Enter note for this consignment:', existing);
+        if (input === null) return;
+        const value = input.trim();
+        if (value){
+          notes[key] = value;
+        }else{
+          delete notes[key];
+        }
+        updateRowNoteCell(idx);
+        renderScheduleTable();
+        save();
+      }
+
+      function manualMarkRow(idx){
+        if (!hasRunsheetUI) return;
+        const row = tableData[idx + 1];
+        if (!row){
+          toast('Unable to locate this consignment row.', 'error');
+          return;
+        }
+        const so = normSO(row[COL_SO]);
+        if (!so){
+          toast('This row does not contain a sales order.', 'error');
+          return;
+        }
+        const expected = generated[so];
+        if (!expected?.length){
+          toast('No consignments are pending for this sales order.', 'error');
+          return;
+        }
+        if (!scanned[so]) scanned[so] = new Set();
+        const nextCode = expected.find(code => !scanned[so].has(code));
+        if (!nextCode){
+          toast('All consignments already marked for this sales order.', 'info');
+          return;
+        }
+        scanned[so].add(nextCode);
+        const scannedCount = scanned[so].size;
+        const total = expected.length;
+        const { run, drop } = firstRunDrop(so);
+        setStatus({ so, run, drop, scannedCount, total });
+        updateRowHighlight(so);
+        lastScanInfo = { so, run, drop };
+        updateSummaryDisplay();
+        save();
+        focusScan();
+        toast('Consignment marked manually.', 'success');
+      }
+
+      function handleTableClick(event){
+        const noteBtn = event.target.closest('.note-btn');
+        if (noteBtn){
+          const idx = Number(noteBtn.dataset.row);
+          if (Number.isFinite(idx)) editNoteForRow(idx);
+          return;
+        }
+        const manualBtn = event.target.closest('.manual-btn');
+        if (manualBtn){
+          const idx = Number(manualBtn.dataset.row);
+          if (Number.isFinite(idx)) manualMarkRow(idx);
+        }
+      }
+
       async function handleFiles(fileList){
         if (!canUpload || !hasRunsheetUI) return;
         if(!fileList || !fileList.length) return;
@@ -873,6 +1054,8 @@
           return;
         }
         try{
+          tableData = sanitizeTableData(tableData);
+          const previousRows = Math.max(0, tableData.length - 1);
           const files = Array.from(fileList);
           const results = await Promise.all(files.map(f => readWorkbookFile(f).then(rows => ({ name:f.name, rows }))));
           if (!results.length || !results[0].rows?.length){
@@ -882,24 +1065,23 @@
 
           let base = tableData.length ? tableData[0] : results[0].rows[0] || [];
           let merged = [ base ];
-          let addedCount = 0;
           let newFilesMeta = [];
 
           if (tableData.length > 1) {
             merged = merged.concat(tableData.slice(1));
-            addedCount += (tableData.length - 1);
           }
 
           results.forEach(r => {
-            const body = (r.rows || []).slice(1);
-            if (body.length) {
-              merged = merged.concat(body);
-              addedCount += body.length;
-              newFilesMeta.push({ name: r.name, rows: body.length });
+            const cleanedBody = ((r.rows || []).slice(1) || []).filter(rowHasMeaningfulData);
+            if (cleanedBody.length) {
+              merged = merged.concat(cleanedBody);
+              newFilesMeta.push({ name: r.name, rows: cleanedBody.length });
             }
           });
 
+          merged = sanitizeTableData(merged);
           tableData = merged;
+          pruneNotes();
           loadedFiles = (loadedFiles || []).concat(newFilesMeta);
           filteredSO = null;
           lastScanInfo = null;
@@ -915,7 +1097,9 @@
           updateScanAvailability();
           save();
           focusScan();
-          toast(`Merged ${newFilesMeta.length} file(s), ${addedCount.toLocaleString()} rows.`, 'success');
+          const totalRows = Math.max(0, tableData.length - 1);
+          const addedRows = Math.max(0, totalRows - previousRows);
+          toast(`Merged ${newFilesMeta.length} file(s), ${addedRows.toLocaleString()} new row(s).`, 'success');
         }catch(err){
           console.error(err);
           toast('Unable to read the selected workbook. Please verify the file format.', 'error');
@@ -985,16 +1169,30 @@
 
       function handleScan(raw){
         const s = raw ? String(raw).trim() : '';
-        if(!s) return false;
-        if (s.length < MIN_BARCODE_LENGTH){ toast(`Barcode must be ${MIN_BARCODE_LENGTH} characters.`, 'error'); shakeInput(); return false; }
+        if(!s){
+          resetScanInput();
+          return false;
+        }
+        if (s.length < MIN_BARCODE_LENGTH){
+          toast(`Barcode must be ${MIN_BARCODE_LENGTH} characters.`, 'error');
+          shakeInput();
+          resetScanInput();
+          return false;
+        }
         const code = s.toUpperCase();
         const so = code.slice(0,-3);
         const known = generated[so];
-        if(!known || !known.includes(code)){ toast('Sales Order not found or barcode invalid.','error'); shakeInput(); return false; }
+        if(!known || !known.includes(code)){
+          toast('Sales Order not found or barcode invalid.','error');
+          shakeInput();
+          resetScanInput();
+          return false;
+        }
         if(!scanned[so]) scanned[so]=new Set();
         const preventDuplicates = hasRunsheetUI;
         if (preventDuplicates && scanned[so].has(code)){
           toast('This barcode has already been scanned.','info');
+          resetScanInput();
           focusScan();
           return false;
         }
@@ -1014,13 +1212,13 @@
           ? `Marked 1 / ${total} for ${so}`
           : `Run ${run || '-'} / Drop ${drop || '-'} for ${so}`;
         toast(statusText,'success');
+        resetScanInput();
         return true;
       }
 
       scanEl.addEventListener('keydown', (e)=>{
         if(e.key==='Enter'){
-          const ok = handleScan(e.target.value);
-          if(ok) e.target.value='';
+          handleScan(e.target.value);
         }
       });
 
@@ -1035,8 +1233,7 @@
         if (autoScanTimer) clearTimeout(autoScanTimer);
         autoScanTimer = setTimeout(()=>{
           autoScanTimer = null;
-          const ok = handleScan(value);
-          if (ok) scanEl.value='';
+          handleScan(value);
         }, AUTOSCAN_DELAY);
       });
 
@@ -1086,16 +1283,18 @@
             toast('No manifest entries yet.', 'info');
             return;
           }
-          headers = [...MANIFEST_HEADERS, 'Status'];
+          headers = [...MANIFEST_HEADERS, 'Notes', 'Status'];
           const statusBySo = {};
           Object.keys(generated).forEach(so=>{
             const expected = generated[so]?.length ?? 0;
             const counted = scanned[so]?.size ?? 0;
             statusBySo[so] = expected > 0 && counted >= expected ? 'Complete' : 'Not Complete';
           });
-          dataRows = tableData.slice(1).map(row=>{
+          dataRows = tableData.slice(1).map((row, idx)=>{
             const cells = manifestRowToCells(row);
             const so = normSO(row[COL_SO]);
+            const note = notes[getRowKey(idx)] || '';
+            cells.push(note || '-');
             cells.push(statusBySo[so] || 'Not Complete');
             return cells;
           });
@@ -1104,7 +1303,13 @@
             toast('No entries in the schedule yet.', 'info');
             return;
           }
-          dataRows = tableData.slice(1).map(row => manifestRowToCells(row));
+          headers = [...MANIFEST_HEADERS, 'Notes'];
+          dataRows = tableData.slice(1).map((row, idx) => {
+            const cells = manifestRowToCells(row);
+            const note = notes[getRowKey(idx)] || '';
+            cells.push(note || '-');
+            return cells;
+          });
         }
 
         let csv = headers.join(',') + '\n';
@@ -1125,7 +1330,8 @@
           toast('Report sent to admin.', 'success');
         }catch(err){
           console.error('Failed to send report', err);
-          toast('Failed to send report.', 'error');
+          const message = err?.message || err?.error_description || 'Failed to send report.';
+          toast(message, 'error');
         }
       });
 
@@ -1320,11 +1526,12 @@
             updateMeta();
             return;
           }
-          tableData = rows;
+          tableData = sanitizeTableData(rows);
           fileName = file.name;
           renderPreview();
           updateMeta();
-          showToast(`Loaded admin workbook (${rows.length - 1} rows).`, 'success');
+          const rowCount = Math.max(0, tableData.length - 1);
+          showToast(`Loaded admin workbook (${rowCount} rows).`, 'success');
         } catch (err) {
           console.error(err);
           showToast('Unable to read admin workbook.', 'error');
