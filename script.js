@@ -28,6 +28,11 @@
       }
       return typeof XLSX !== 'undefined';
     }
+    const supabaseConfig = window.SUPABASE_CONFIG || null;
+    const supabase = (typeof window.supabase !== 'undefined' && supabaseConfig?.url && supabaseConfig?.anonKey)
+      ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
+      : null;
+    const SUPABASE_ENABLED = !!supabase;
 
     const logoutBtn = document.getElementById('auth_logout');
 
@@ -103,43 +108,122 @@
       setTimeout(()=>el.remove(),1600);
     }
 
-    function storeFinalDataForUser(userId, tableData, filesMeta, manifestData){
+    async function storeFinalDataForUser(userId, tableData, filesMeta, manifestData){
       const manifest = manifestData || computeManifestData(tableData);
-      const base = suffix => `drm_${userId}_final_${suffix}`;
-      localStorage.setItem(base('table_v2'), JSON.stringify(tableData));
-      localStorage.setItem(base('generated_v2'), JSON.stringify(manifest.generated));
-      localStorage.setItem(base('rowlookup_v2'), JSON.stringify(manifest.rowLookup));
-      localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
-      localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase
+          .from('depot_manifests')
+          .insert({
+            depot_id: userId,
+            kind: 'final',
+            payload: {
+              tableData,
+              filesMeta,
+              generated: manifest.generated,
+              rowLookup: manifest.rowLookup
+            },
+            uploaded_by: currentUser?.id || 'admin'
+          });
+        if (error) throw error;
+      } else {
+        const base = suffix => `drm_${userId}_final_${suffix}`;
+        localStorage.setItem(base('table_v2'), JSON.stringify(tableData));
+        localStorage.setItem(base('generated_v2'), JSON.stringify(manifest.generated));
+        localStorage.setItem(base('rowlookup_v2'), JSON.stringify(manifest.rowLookup));
+        localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
+        localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+      }
     }
 
-    function storeGlueDataForUser(userId, scheduleEntries, filesMeta){
-      const base = suffix => `drm_${userId}_glue_${suffix}`;
-      localStorage.setItem(base('schedule_v1'), JSON.stringify(scheduleEntries));
-      localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
-      localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+    async function storeGlueDataForUser(userId, scheduleEntries, filesMeta, options = {}){
+      const { tableData = [], manifest = null } = options || {};
+      const generated = manifest?.generated || {};
+      const rowLookup = manifest?.rowLookup || {};
+      const payload = {
+        scheduleEntries,
+        filesMeta,
+        tableData,
+        generated,
+        rowLookup
+      };
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase
+          .from('depot_manifests')
+          .insert({
+            depot_id: userId,
+            kind: 'glue',
+            payload,
+            uploaded_by: currentUser?.id || 'admin'
+          });
+        if (error) throw error;
+      } else {
+        const base = suffix => `drm_${userId}_glue_${suffix}`;
+        localStorage.setItem(base('schedule_v1'), JSON.stringify(scheduleEntries));
+        localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
+        localStorage.setItem(base('table_v2'), JSON.stringify(tableData));
+        localStorage.setItem(base('generated_v2'), JSON.stringify(generated));
+        localStorage.setItem(base('rowlookup_v2'), JSON.stringify(rowLookup));
+        localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+      }
     }
 
     const REPORTS_KEY = 'drm_admin_reports_v1';
-    function loadReports(){
+    const loadReportsLocal = () => {
       try{
         return JSON.parse(localStorage.getItem(REPORTS_KEY) || '[]');
       }catch{
         return [];
       }
-    }
-    function saveReports(list){
+    };
+    const saveReportsLocal = (list) => {
       localStorage.setItem(REPORTS_KEY, JSON.stringify(list));
+    };
+
+    async function loadReports(){
+      if (SUPABASE_ENABLED){
+        const { data, error } = await supabase
+          .from('depot_reports')
+          .select('*')
+          .order('created_at', { ascending:false });
+        if (error) throw error;
+        return data || [];
+      }
+      return loadReportsLocal();
     }
-    function addReport(report){
-      const reports = loadReports();
+
+    async function addReport(report){
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase.from('depot_reports').insert({
+          id: report.id,
+          depot_id: report.depotId,
+          depot_name: report.depotName,
+          kind: report.kind,
+          rows: report.rows,
+          filename: report.filename,
+          csv: report.csv
+        });
+        if (error) throw error;
+        window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+        return;
+      }
+      const reports = loadReportsLocal();
       reports.push(report);
-      saveReports(reports);
+      saveReportsLocal(reports);
       window.dispatchEvent(new CustomEvent('drm:reports-updated'));
     }
-    function removeReport(reportId){
-      const reports = loadReports().filter(r => r.id !== reportId);
-      saveReports(reports);
+
+    async function removeReport(reportId){
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase
+          .from('depot_reports')
+          .delete()
+          .eq('id', reportId);
+        if (error) throw error;
+        window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+        return;
+      }
+      const reports = loadReportsLocal().filter(r => r.id !== reportId);
+      saveReportsLocal(reports);
       window.dispatchEvent(new CustomEvent('drm:reports-updated'));
     }
     function encodeCSV(str){
@@ -535,7 +619,7 @@
           }
 
           updateFileMeta();
-          refreshSchedule();
+          refreshSchedule({ fetchRemote: SUPABASE_ENABLED && !hasRunsheetUI });
           updateScanAvailability();
         }catch{
           tableData=[]; generated={}; rowLookup={}; loadedFiles=[];
@@ -544,7 +628,7 @@
           if (hasScheduleUI) scheduleEntries = [];
           scanned = {};
           updateFileMeta();
-          refreshSchedule();
+          refreshSchedule({ fetchRemote: SUPABASE_ENABLED && !hasRunsheetUI });
           updateScanAvailability();
         }
       }
@@ -573,7 +657,7 @@
           localStorage.removeItem(KEYS.scanned);
         }
         updateFileMeta();
-        refreshSchedule();
+        refreshSchedule({ fetchRemote: false });
         updateScanAvailability();
       }
 
@@ -634,33 +718,114 @@
         updateFilterUI();
       }
 
-      function syncExternalRunsheet(){
-        if (hasRunsheetUI) return;
+      function loadFromLocalStorage(){
         try{
-          const finalKey = suffix => `drm_${currentUser?.id || 'anon'}_final_${suffix}`;
-          const tableRaw = localStorage.getItem(finalKey('table_v2'));
-          const lookupRaw = localStorage.getItem(finalKey('rowlookup_v2'));
-          const genRaw    = localStorage.getItem(finalKey('generated_v2'));
-          tableData = tableRaw ? JSON.parse(tableRaw) || [] : [];
-          rowLookup = lookupRaw ? JSON.parse(lookupRaw) || {} : {};
-          generated = genRaw ? JSON.parse(genRaw) || {} : {};
-          if (tableData.length && (!genRaw || !lookupRaw)){
-            const manifest = computeManifestData(tableData);
-            if (!genRaw) generated = manifest.generated;
-            if (!lookupRaw) rowLookup = manifest.rowLookup;
+          const t = localStorage.getItem(KEYS.table);
+          const g = localStorage.getItem(KEYS.gen);
+          const l = localStorage.getItem(KEYS.lookup);
+          const f = localStorage.getItem(KEYS.files);
+          const sched = localStorage.getItem(KEYS.schedule);
+          const scannedRaw = localStorage.getItem(KEYS.scanned);
+          if (t) tableData = JSON.parse(t) || tableData;
+          if (g) generated = JSON.parse(g) || generated;
+          if (l) rowLookup = JSON.parse(l) || rowLookup;
+          if (f) loadedFiles = JSON.parse(f) || loadedFiles;
+          if (sched){
+            const parsed = JSON.parse(sched);
+            if (Array.isArray(parsed)) scheduleEntries = parsed;
+          }
+          if (scannedRaw){
+            const plain = JSON.parse(scannedRaw) || {};
+            scanned = {};
+            Object.entries(plain).forEach(([key, arr])=>{
+              scanned[key] = new Set(arr || []);
+            });
           }
         }catch{
-          tableData=[]; rowLookup={}; generated={};
+          // ignore malformed localStorage values
         }
       }
 
-      function refreshSchedule(){
-        if (!hasScheduleUI) return;
-        syncExternalRunsheet();
-        renderScheduleTable();
+      async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false } = {}){
+        tableData = [];
+        generated = {};
+        rowLookup = {};
+        loadedFiles = [];
+        scheduleEntries = [];
+        filteredSO = null;
+        lastScanInfo = null;
+        scanned = {};
+
+        // fallback local data first
+        loadFromLocalStorage();
+
+        if (fetchRemote && SUPABASE_ENABLED){
+          try{
+            const kind = prefix === 'final' ? 'final' : 'glue';
+            const { data, error } = await supabase
+              .from('depot_manifests')
+              .select('payload, created_at')
+              .eq('depot_id', currentUser?.id || 'unknown')
+              .eq('kind', kind)
+              .order('created_at', { ascending:false })
+              .limit(1)
+              .maybeSingle();
+            if (error) throw error;
+            if (data?.payload){
+              const payload = data.payload || {};
+              if (Array.isArray(payload.tableData)) tableData = payload.tableData;
+              if (Array.isArray(payload.filesMeta)) loadedFiles = payload.filesMeta;
+              if (payload.generated) generated = payload.generated;
+              if (payload.rowLookup) rowLookup = payload.rowLookup;
+              if (Array.isArray(payload.scheduleEntries)) scheduleEntries = payload.scheduleEntries;
+              else if (Array.isArray(payload.entries)) scheduleEntries = payload.entries;
+            }
+          }catch(err){
+            console.error('Supabase fetch error', err);
+            if (!isInitial){
+              showToast('Unable to fetch latest data from server. Using local copy.', 'error');
+            }
+          }
+        }
+
+        if (prefix === 'final' && tableData.length){
+          if (!Object.keys(generated).length || !Object.keys(rowLookup).length){
+            const manifest = computeManifestData(tableData);
+            generated = manifest.generated;
+            rowLookup = manifest.rowLookup;
+          }
+        }
+
+        if (prefix === 'glue' && !scheduleEntries.length && tableData.length){
+          scheduleEntries = computeScheduleEntries(tableData);
+        }
+
+        if (!hasRunsheetUI){
+          try{
+            localStorage.setItem(KEYS.table, JSON.stringify(tableData));
+            localStorage.setItem(KEYS.gen, JSON.stringify(generated));
+            localStorage.setItem(KEYS.lookup, JSON.stringify(rowLookup));
+            localStorage.setItem(KEYS.files, JSON.stringify(loadedFiles));
+            localStorage.setItem(KEYS.schedule, JSON.stringify(scheduleEntries));
+          }catch{
+            // ignore storage failures
+          }
+        }
+
+        scanEl.disabled = (prefix === 'final') && tableData.length === 0;
+
+        updateFileMeta();
         updateScheduleMeta();
+        renderTable();
+        renderScheduleTable();
         updateScanAvailability();
         updateSummaryDisplay();
+      }
+
+      function refreshSchedule(options = {}){
+        if (!hasScheduleUI) return;
+        const { fetchRemote = false, isInitial = false } = options || {};
+        loadInitialData({ fetchRemote, isInitial }).catch(err => console.error(err));
       }
 
       function updateRowHighlight(so){
@@ -745,7 +910,7 @@
           renderTable();
           scanEl.value = '';
           Object.keys(rowLookup).forEach(updateRowHighlight);
-          refreshSchedule();
+          refreshSchedule({ fetchRemote: false });
           updateFileMeta();
           updateScanAvailability();
           save();
@@ -773,7 +938,7 @@
           if(!rows.length){
             toast('The production schedule appears to be empty.', 'error');
             scheduleEntries = [];
-            refreshSchedule();
+            refreshSchedule({ fetchRemote: false });
             save();
             return;
           }
@@ -797,7 +962,7 @@
             toast('No sales orders found in the production schedule.', 'error');
             filteredSO = null;
             scheduleEntries = [];
-            refreshSchedule();
+            refreshSchedule({ fetchRemote: false });
             save();
             return;
           }
@@ -806,7 +971,7 @@
           lastScanInfo = null;
           updateSummaryDisplay();
           updateFilterUI();
-          refreshSchedule();
+          refreshSchedule({ fetchRemote: false });
           updateScanAvailability();
           save();
           toast(`Loaded ${entries.length} production order(s).`,'success');
@@ -897,10 +1062,14 @@
       });
 
       if (hasScheduleUI && !hasRunsheetUI && typeof window !== 'undefined'){
-        window.addEventListener('drm:runsheet-updated', refreshSchedule);
+        window.addEventListener('drm:runsheet-updated', event=>{
+          const prefixDetail = event?.detail?.prefix;
+          const shouldFetch = SUPABASE_ENABLED && (prefixDetail === 'admin' || prefixDetail === 'glue');
+          refreshSchedule({ fetchRemote: shouldFetch });
+        });
       }
 
-      exportEl.addEventListener('click', ()=>{
+      exportEl.addEventListener('click', async ()=>{
         if(!tableData.length){
           toast('Nothing to report yet.', 'error');
           return;
@@ -951,11 +1120,16 @@
           filename: `${prefix}_${currentUser?.id || 'unknown'}_${Date.now()}.csv`,
           csv: encodeCSV(csv)
         };
-        addReport(report);
-        toast('Report sent to admin.', 'success');
+        try{
+          await addReport(report);
+          toast('Report sent to admin.', 'success');
+        }catch(err){
+          console.error('Failed to send report', err);
+          toast('Failed to send report.', 'error');
+        }
       });
 
-      load();
+      loadInitialData({ fetchRemote: SUPABASE_ENABLED, isInitial: true }).catch(err => console.error(err));
 
       return { focus: () => { if(!scanEl.disabled) scanEl.focus(); } };
     }
@@ -975,6 +1149,8 @@
 
       let tableData = [];
       let fileName = '';
+      let reportsCache = [];
+      let reportsLoading = false;
 
       function renderPreview(){
         if (!tableData.length){
@@ -1012,58 +1188,110 @@
         return Array.from(targetsWrap.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
       }
 
-      function renderReports(){
-        const reports = loadReports();
-        if (!reports.length){
-          reportsMeta.textContent = 'No reports submitted.';
-          reportsTable.innerHTML = '<div class="table-scroll"></div>';
+      async function renderReports(){
+        reportsLoading = true;
+        reportsMeta.textContent = 'Loading reports…';
+        reportsTable.innerHTML = '<div class="table-scroll"></div>';
+        try{
+          const reports = await loadReports();
+          const normalized = Array.isArray(reports) ? reports.map(report => {
+            const createdValue = report.created || report.created_at || report.createdAt || null;
+            const depotId = report.depot_id || report.depotId || 'unknown';
+            const depotName = report.depot_name || report.depotName || depotId;
+            return {
+              id: report.id,
+              depotId,
+              depotName,
+              kind: report.kind,
+              rows: report.rows,
+              filename: report.filename,
+              csv: report.csv,
+              created: createdValue
+            };
+          }) : [];
+          reportsCache = normalized;
+          if (!normalized.length){
+            reportsMeta.textContent = 'No reports submitted.';
+            reportsTable.innerHTML = '<div class="table-scroll"></div>';
+            return;
+          }
+          reportsMeta.textContent = `${normalized.length} report(s) awaiting review.`;
+          let html = '<div class="table-scroll"><table><thead><tr>';
+          html += '<th>Depot</th><th>Type</th><th>Rows</th><th>Submitted</th><th>Actions</th>';
+          html += '</tr></thead><tbody>';
+          normalized.forEach(report => {
+            let submitted = 'Unknown';
+            if (report.created){
+              const date = new Date(report.created);
+              if (!Number.isNaN(date.getTime())){
+                submitted = date.toLocaleString();
+              }
+            }
+            const kindLabel = report.kind === 'final' ? 'Final' : 'Glueline';
+            html += `<tr data-report-id="${report.id}">` +
+                    `<td>${report.depotName || report.depotId}</td>` +
+                    `<td>${kindLabel}</td>` +
+                    `<td>${report.rows ?? '-'}</td>` +
+                    `<td>${submitted}</td>` +
+                    '<td>' +
+                    `<button type="button" class="report-download" data-report="${report.id}">Download</button>` +
+                    `<button type="button" class="report-remove" data-report="${report.id}">Remove</button>` +
+                    '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+          reportsTable.innerHTML = html;
+        }catch(err){
+          console.error('Failed to load reports', err);
+          reportsCache = [];
+          reportsMeta.textContent = 'Unable to load reports.';
+          reportsTable.innerHTML = '<div class="table-scroll"><div style="padding:1rem;text-align:center;">Error loading reports.</div></div>';
+        }finally{
+          reportsLoading = false;
+        }
+      }
+
+      async function downloadReportById(id){
+        if (!id) return;
+        if (reportsLoading){
+          showToast('Reports are still loading. Please wait.', 'info');
           return;
         }
-        reportsMeta.textContent = `${reports.length} report(s) awaiting review.`;
-        let html = '<div class="table-scroll"><table><thead><tr>';
-        html += '<th>Depot</th><th>Type</th><th>Rows</th><th>Submitted</th><th>Actions</th>';
-        html += '</tr></thead><tbody>';
-        reports.forEach(report => {
-          const submitted = new Date(report.created).toLocaleString();
-          const kindLabel = report.kind === 'final' ? 'Final' : 'Glueline';
-          html += `<tr data-report-id="${report.id}">` +
-                  `<td>${report.depotName || report.depotId}</td>` +
-                  `<td>${kindLabel}</td>` +
-                  `<td>${report.rows ?? '-'}</td>` +
-                  `<td>${submitted}</td>` +
-                  '<td>' +
-                  `<button type="button" class="report-download" data-report="${report.id}">Download</button>` +
-                  `<button type="button" class="report-remove" data-report="${report.id}">Remove</button>` +
-                  '</td></tr>';
-        });
-        html += '</tbody></table></div>';
-        reportsTable.innerHTML = html;
+        const report = reportsCache.find(r => r.id === id);
+        if (!report){
+          showToast('Report not found.', 'error');
+          return;
+        }
+        try{
+          const csv = decodeCSV(report.csv);
+          const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = report.filename || `${report.kind}_report.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(()=>URL.revokeObjectURL(a.href),0);
+        }catch(err){
+          console.error('Failed to download report', err);
+          showToast('Unable to download report.', 'error');
+        }
       }
 
-      function downloadReportById(id){
-        const report = loadReports().find(r => r.id === id);
-        if (!report) return;
-        const csv = decodeCSV(report.csv);
-        const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = report.filename || `${report.kind}_report.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(()=>URL.revokeObjectURL(a.href),0);
-      }
-
-      function handleReportAction(event){
+      async function handleReportAction(event){
         const btn = event.target.closest('button');
         if (!btn) return;
         const id = btn.dataset.report;
         if (!id) return;
         if (btn.classList.contains('report-download')){
-          downloadReportById(id);
+          await downloadReportById(id);
         } else if (btn.classList.contains('report-remove')){
-          removeReport(id);
-          showToast('Report removed.', 'info');
+          try{
+            await removeReport(id);
+            showToast('Report removed.', 'info');
+          }catch(err){
+            console.error('Failed to remove report', err);
+            showToast('Unable to remove report.', 'error');
+          }
         }
       }
 
@@ -1122,7 +1350,7 @@
         }];
       }
 
-      function pushFinal(){
+      async function pushFinal(){
         if (!ensureData()) return;
         const targets = selectedDepotIds();
         if (!targets.length){
@@ -1131,14 +1359,24 @@
         }
         const meta = currentFilesMeta();
         const manifest = computeManifestData(tableData);
-        targets.forEach(userId => {
-          storeFinalDataForUser(userId, tableData, meta, manifest);
-        });
-        window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix: 'admin' } }));
-        showToast(`Pushed manifest to ${targets.length} depot(s).`, 'success');
+        pushFinalEl.disabled = true;
+        pushGlueEl.disabled = true;
+        try{
+          await Promise.all(targets.map(userId => {
+            return storeFinalDataForUser(userId, tableData, meta, manifest);
+          }));
+          window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix: 'admin' } }));
+          showToast(`Pushed manifest to ${targets.length} depot(s).`, 'success');
+        }catch(err){
+          console.error('Failed to push final manifest', err);
+          showToast('Failed to push manifest to depot(s).', 'error');
+        }finally{
+          pushFinalEl.disabled = false;
+          pushGlueEl.disabled = false;
+        }
       }
 
-      function pushGlue(){
+      async function pushGlue(){
         if (!ensureData()) return;
         const entries = computeScheduleEntries(tableData);
         if (!entries.length){
@@ -1151,19 +1389,35 @@
           return;
         }
         const meta = currentFilesMeta();
-        targets.forEach(userId => {
-          storeGlueDataForUser(userId, entries, meta);
-        });
-        showToast(`Pushed schedule to ${targets.length} depot(s).`, 'success');
+        const manifest = computeManifestData(tableData);
+        pushGlueEl.disabled = true;
+        pushFinalEl.disabled = true;
+        try{
+          await Promise.all(targets.map(userId => {
+            return storeGlueDataForUser(userId, entries, meta, { tableData, manifest });
+          }));
+          window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix: 'admin', kind: 'glue' } }));
+          showToast(`Pushed schedule to ${targets.length} depot(s).`, 'success');
+        }catch(err){
+          console.error('Failed to push schedule', err);
+          showToast('Failed to push schedule to depot(s).', 'error');
+        }finally{
+          pushGlueEl.disabled = false;
+          pushFinalEl.disabled = false;
+        }
       }
 
       pushFinalEl.addEventListener('click', pushFinal);
       pushGlueEl.addEventListener('click', pushGlue);
-      reportsTable.addEventListener('click', handleReportAction);
-      window.addEventListener('drm:reports-updated', renderReports);
+      reportsTable.addEventListener('click', event=>{
+        handleReportAction(event).catch(err => console.error(err));
+      });
+      window.addEventListener('drm:reports-updated', ()=>{
+        renderReports().catch(err => console.error(err));
+      });
 
       renderTargets();
-      renderReports();
+      renderReports().catch(err => console.error(err));
 
       return {
         focus: () => uploadEl.focus()
@@ -1269,6 +1523,7 @@
     }
   }
 })();
+
 
 
 
