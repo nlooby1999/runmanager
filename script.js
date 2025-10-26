@@ -1733,37 +1733,52 @@
       const adminTabBtn = document.getElementById('tab-admin');
       const adminPanelEl = document.getElementById('panel-admin');
 
-      const finalModule = MarkingModule('final');
+      const isAdmin = user.role === 'admin';
+      let finalModule = null;
       let adminModule = null;
-
-      if (user.role === 'admin'){
-        if (adminTabBtn) adminTabBtn.style.display = '';
-        adminModule = AdminModule();
+      if (!isAdmin){
+        finalModule = MarkingModule('final');
+        if (finalTabEl) finalTabEl.style.display = '';
+        if (finalPanelEl){
+          finalPanelEl.style.display = '';
+          finalPanelEl.classList.add('active');
+        }
+      }else{
         if (finalTabEl) finalTabEl.style.display = 'none';
         if (finalPanelEl) finalPanelEl.style.display = 'none';
-      }else{
-        if (adminTabBtn) adminTabBtn.style.display = 'none';
-        if (adminPanelEl) adminPanelEl.classList.remove('active');
       }
 
-      let activeTab = 'final';
-      if (adminModule){
-        activeTab = 'admin';
+      if (isAdmin){
+        if (adminTabBtn) adminTabBtn.style.display = '';
+        adminModule = AdminModule();
+      }else if (adminTabBtn){
+        adminTabBtn.style.display = 'none';
+        adminPanelEl?.classList.remove('active');
       }
+
+      let activeTab = isAdmin ? 'admin' : 'final';
 
       function activate(which){
         activeTab = which;
-        const tabs = { final: finalTabEl, admin: adminTabBtn };
-        const panels = { final: finalPanelEl, admin: adminPanelEl };
+        const tabs = {};
+        const panels = {};
+        if (finalModule){
+          tabs.final = finalTabEl;
+          panels.final = finalPanelEl;
+        }
+        if (adminModule){
+          tabs.admin = adminTabBtn;
+          panels.admin = adminPanelEl;
+        }
         Object.entries(tabs).forEach(([,tab])=> tab?.setAttribute('aria-selected','false'));
         Object.entries(panels).forEach(([,panel])=> panel?.classList.remove('active'));
         if (tabs[which]) tabs[which].setAttribute('aria-selected','true');
         if (panels[which]) panels[which].classList.add('active');
-        if (which === 'final') finalModule.focus();
+        if (which === 'final' && finalModule) finalModule.focus();
         if (which === 'admin' && adminModule) adminModule.focus();
       }
 
-      if (finalTabEl){
+      if (finalTabEl && finalModule){
         finalTabEl.addEventListener('click', ()=>activate('final'));
       }
       if (adminModule && adminTabBtn){
@@ -1773,7 +1788,7 @@
       activate(activeTab);
 
       window.addEventListener('focus', ()=>{
-        if (activeTab === 'final') finalModule.focus();
+        if (activeTab === 'final' && finalModule) finalModule.focus();
         else if (activeTab === 'admin' && adminModule) adminModule.focus();
       });
     }
