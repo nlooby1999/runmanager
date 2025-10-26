@@ -291,7 +291,6 @@
       { id:'sydney',   name:'Sydney Depot', role:'depot' },
       { id:'brisbane', name:'Brisbane Depot', role:'depot' },
       { id:'perth',    name:'Perth Depot', role:'depot' },
-      { id:'glueline', name:'Glueline Team', role:'glue' },
       { id:'admin',    name:'Administrator', role:'admin' }
     ];
     const PASSWORDS = {
@@ -468,34 +467,52 @@
         }
       }
 
+      if (runFilterEl){
+        runFilterEl.addEventListener('change', event=>{
+          const value = event.target.value || 'all';
+          runFilter = value === 'all' ? 'all' : value.trim();
+          renderTable();
+          renderScheduleTable();
+          if (hasRunsheetUI) focusScan();
+        });
+      }
+
       function ensureStatus(){
         if (statusEl) return statusEl;
         statusEl = document.createElement('div');
-        Object.assign(statusEl.style,{
-          marginTop:'0.75rem',border:'1px solid rgba(148,163,184,.25)',borderRadius:'12px',
-          padding:'12px 14px',background:'rgba(56,189,248,.08)',boxShadow:'inset 0 1px 0 rgba(255,255,255,.04)',
-          fontSize:'1rem',letterSpacing:'0.01em'
-        });
+        statusEl.className = 'status-card';
         const card = fileEl.closest('.card');
         const controls = card?.querySelector('.controls');
         if (card && controls) card.insertBefore(statusEl, controls.nextSibling);
         return statusEl;
       }
 
-      function setStatus({so, run, drop, scannedCount, total}){
+      function setStatus({so, run, drop, scannedCount, total, statusMessage}){
         const el = ensureStatus();
-        const runText = run && run !== '-' ? run : '-';
-        const dropText = drop && drop !== '-' ? drop : '-';
-        const hasRoute = runText !== '-' || dropText !== '-';
-        const routeText = hasRoute ? `Run ${runText} / Drop ${dropText}` : 'Not routed';
-        let html = `
-          <strong>Sales Order:</strong> <span>${so}</span>&nbsp;&middot;&nbsp;
-          <strong>Route:</strong> <span style="font-size:1.2rem;font-weight:700;letter-spacing:.02em">${routeText}</span>
-        `;
-        if (hasRunsheetUI) {
-          html += `&nbsp;&middot;&nbsp;<strong>Progress:</strong> <span>${scannedCount}/${total}</span>`;
+        const routeExists = (run && run !== '-') || (drop && drop !== '-');
+        const runPart = run && run !== '-' ? String(run) : '';
+        const dropPart = drop && drop !== '-' ? String(drop) : '';
+        const combinedRoute = `${runPart}${dropPart}`;
+        const safeSO = escapeHTML(so || '-');
+        let routeHTML;
+        if (statusMessage){
+          routeHTML = `<div class="status-route status-route--missing">${escapeHTML(statusMessage)}</div>`;
+        } else if (routeExists){
+          routeHTML = `<div class="status-route">${escapeHTML(combinedRoute || '-')}</div>`;
+        } else {
+          routeHTML = `<div class="status-route status-route--missing">Not routed</div>`;
         }
-        el.innerHTML = html;
+        const progressHTML = hasRunsheetUI
+          ? `<div class="status-meta"><span class="status-label">Progress</span><span class="status-progress">${escapeHTML(String(scannedCount ?? 0))}/${escapeHTML(String(total ?? 0))}</span></div>`
+          : '';
+        el.innerHTML = `
+          <div class="status-row">
+            <span class="status-label">Sales Order</span>
+            <span class="status-value">${safeSO}</span>
+          </div>
+          ${routeHTML}
+          ${progressHTML}
+        `;
       }
 
       const toast = showToast;
@@ -673,6 +690,7 @@
 
       function reset(clear=false){
         tableData=[]; generated={}; scanned={}; rowLookup={}; loadedFiles=[]; notes={};
+        runFilter = 'all';
         if (hasScheduleUI) scheduleEntries=[];
         filteredSO = null;
         lastScanInfo = null;
@@ -698,16 +716,25 @@
         updateFileMeta();
         refreshSchedule({ fetchRemote: false });
         updateScanAvailability();
+        if (runFilterEl){
+          runFilterEl.value = 'all';
+          runFilterEl.disabled = true;
+        }
       }
 
       function renderTable(){
         if (!hasRunsheetUI || !tableWrap) return;
         pruneNotes();
         const headers = MANIFEST_HEADERS;
+        const normalizedFilter = runFilter.trim().toUpperCase();
         let html = '<div class="table-scroll"><table><thead><tr>';
         headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
         html += '<th>Notes</th></tr></thead><tbody>';
         tableData.slice(1).forEach((row, idx)=>{
+          if (runFilter !== 'all'){
+            const runValue = String(row?.[0] ?? '').trim().toUpperCase();
+            if (runValue !== normalizedFilter) return;
+          }
           html += `<tr id="${prefix}-row-${idx}" data-row-index="${idx}">`;
           const cells = manifestRowToCells(row);
           cells.forEach(cell=> html += `<td>${escapeHTML(cell)}</td>`);
@@ -716,6 +743,7 @@
         });
         html += '</tbody></table></div>';
         tableWrap.innerHTML = html;
+        updateRunFilterOptions();
       }
 
       if (hasRunsheetUI && tableWrap && !tableWrap.dataset.notesBound){
@@ -726,6 +754,7 @@
       function renderScheduleTable(){
         if (!hasScheduleUI || !scheduleWrap) return;
         pruneNotes();
+        if (!hasRunsheetUI) updateRunFilterOptions();
         const headers = MANIFEST_HEADERS;
         const entries = filteredSO ? scheduleEntries.filter(entry => entry.so === filteredSO) : scheduleEntries;
         if (!entries.length){
@@ -740,6 +769,7 @@
         let html = '<div class="table-scroll"><table><thead><tr>';
         headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
         html += '<th>Notes</th></tr></thead><tbody>';
+        const normalizedFilter = runFilter.trim().toUpperCase();
         entries.forEach(entry=>{
           const idxs = rowLookup[entry.so] || [];
           const route = firstRunDrop(entry.so);
@@ -748,11 +778,13 @@
           if (idxs.length){
             idxs.forEach(idx=>{
               const row = tableData[idx+1] || [];
+              if (runFilter !== 'all' && String(row?.[0] ?? '').trim().toUpperCase() !== normalizedFilter) return;
               const cells = manifestRowToCells(row);
               const noteCell = buildNotesCellContent(idx, false);
               html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + `<td class="notes-cell">${noteCell}</td></tr>`;
             });
           }else{
+            if (runFilter !== 'all' && String(runText ?? '').trim().toUpperCase() !== normalizedFilter) return;
             const cells = new Array(headers.length).fill('-');
             cells[0] = runText;
             cells[1] = dropText;
@@ -951,6 +983,46 @@
             delete notes[key];
           }
         });
+      }
+
+      function updateRunFilterOptions(){
+        if (!runFilterEl) return;
+        const runsMap = new Map();
+        tableData.slice(1).forEach(row=>{
+          const raw = row?.[0];
+          if (raw == null) return;
+          const display = String(raw).trim();
+          if (!display) return;
+          const upper = display.toUpperCase();
+          if (!runsMap.has(upper)) runsMap.set(upper, display);
+        });
+
+        const previous = runFilter;
+        runFilterEl.innerHTML = '';
+        const allOption = document.createElement('option');
+        allOption.value = 'all';
+        allOption.textContent = 'All runs';
+        runFilterEl.appendChild(allOption);
+
+        if (runsMap.size){
+          const sorted = Array.from(runsMap.values()).sort((a,b)=> a.localeCompare(b, undefined, { numeric:true, sensitivity:'base' }));
+          sorted.forEach(runValue=>{
+            const option = document.createElement('option');
+            option.value = runValue;
+            option.textContent = `Run ${runValue}`;
+            runFilterEl.appendChild(option);
+          });
+          const upperPrev = (previous || '').trim().toUpperCase();
+          if (upperPrev !== 'ALL' && !runsMap.has(upperPrev)){
+            runFilter = 'all';
+          }
+          runFilterEl.disabled = false;
+        } else {
+          runFilter = 'all';
+          runFilterEl.disabled = true;
+        }
+
+        runFilterEl.value = runFilter;
       }
 
       function buildNotesCellContent(idx, includeActions){
@@ -1184,6 +1256,16 @@
         const known = generated[so];
         if(!known || !known.includes(code)){
           toast('Sales Order not found or barcode invalid.','error');
+          setStatus({
+            so: so || code,
+            run: '-',
+            drop: '-',
+            scannedCount: 0,
+            total: 0,
+            statusMessage: 'Consignment not found'
+          });
+          lastScanInfo = null;
+          updateSummaryDisplay();
           shakeInput();
           resetScanInput();
           return false;
@@ -1191,6 +1273,13 @@
         if(!scanned[so]) scanned[so]=new Set();
         const preventDuplicates = hasRunsheetUI;
         if (preventDuplicates && scanned[so].has(code)){
+          const scannedCount = scanned[so].size;
+          const total = known.length;
+          const {run, drop} = firstRunDrop(so);
+          setStatus({ so, run, drop, scannedCount, total });
+          if (hasScheduleUI && !hasRunsheetUI) applyScheduleFilter(so);
+          lastScanInfo = { so, run, drop };
+          updateSummaryDisplay();
           toast('This barcode has already been scanned.','info');
           resetScanInput();
           focusScan();
@@ -1250,7 +1339,10 @@
       }
 
       clearEl.addEventListener('click', ()=>{
-        if(!confirm('Clear this marking tab?')) return;
+        const promptMsg = prefix === 'final'
+          ? 'This will remove all loaded runsheets, scans, and notes for Final Marking. Are you sure?'
+          : 'This will clear all data for this tab. Continue?';
+        if(!confirm(promptMsg)) return;
         reset(true);
         scanEl.value='';
         if (hasRunsheetUI && fileEl) fileEl.value='';
@@ -1344,12 +1436,12 @@
       const uploadEl = document.getElementById('admin_upload');
       const metaEl   = document.getElementById('admin_meta');
       const pushFinalEl = document.getElementById('admin_push_final');
-      const pushGlueEl  = document.getElementById('admin_push_glue');
+      const pushAllEl   = document.getElementById('admin_push_all');
       const previewWrap = document.getElementById('admin_preview');
       const targetsWrap = document.getElementById('admin_targets');
       const reportsMeta = document.getElementById('admin_reports_meta');
       const reportsTable= document.getElementById('admin_reports_table');
-      if (!uploadEl || !metaEl || !pushFinalEl || !pushGlueEl || !previewWrap || !targetsWrap || !reportsMeta || !reportsTable){
+      if (!uploadEl || !metaEl || !pushFinalEl || !pushAllEl || !previewWrap || !targetsWrap || !reportsMeta || !reportsTable){
         return { focus: () => {} };
       }
 
@@ -1376,22 +1468,34 @@
 
       function renderTargets(){
         targetsWrap.innerHTML = '';
-        USERS.filter(u => u.role === 'depot' || u.role === 'glue').forEach(user=>{
-          const label = document.createElement('label');
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.value = user.id;
-          checkbox.checked = true;
-          const span = document.createElement('span');
-          span.textContent = user.name;
-          label.appendChild(checkbox);
-          label.appendChild(span);
-          targetsWrap.appendChild(label);
+        const select = document.createElement('select');
+        select.id = 'admin_target_select';
+        select.className = 'run-filter';
+        const depots = USERS.filter(u => u.role === 'depot');
+        depots.forEach(user=>{
+          const option = document.createElement('option');
+          option.value = user.id;
+          option.textContent = user.name;
+          select.appendChild(option);
         });
+        if (depots.length){
+          select.selectedIndex = 0;
+          select.disabled = false;
+        }else{
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = 'No depots available';
+          placeholder.selected = true;
+          select.appendChild(placeholder);
+          select.disabled = true;
+        }
+        targetsWrap.appendChild(select);
       }
 
       function selectedDepotIds(){
-        return Array.from(targetsWrap.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+        const select = targetsWrap.querySelector('select');
+        if (!select) return [];
+        return select.value ? [select.value] : [];
       }
 
       async function renderReports(){
@@ -1557,17 +1661,17 @@
         }];
       }
 
-      async function pushFinal(){
+      async function pushFinal(targetsOverride=null){
         if (!ensureData()) return;
-        const targets = selectedDepotIds();
+        const targets = Array.isArray(targetsOverride) ? targetsOverride : selectedDepotIds();
         if (!targets.length){
-          showToast('Select at least one depot.', 'error');
+          showToast('Select a depot first.', 'error');
           return;
         }
         const meta = currentFilesMeta();
         const manifest = computeManifestData(tableData);
         pushFinalEl.disabled = true;
-        pushGlueEl.disabled = true;
+        pushAllEl.disabled = true;
         try{
           await Promise.all(targets.map(userId => {
             return storeFinalDataForUser(userId, tableData, meta, manifest);
@@ -1579,43 +1683,19 @@
           showToast('Failed to push manifest to depot(s).', 'error');
         }finally{
           pushFinalEl.disabled = false;
-          pushGlueEl.disabled = false;
-        }
-      }
-
-      async function pushGlue(){
-        if (!ensureData()) return;
-        const entries = computeScheduleEntries(tableData);
-        if (!entries.length){
-          showToast('No sales orders found to push.', 'error');
-          return;
-        }
-        const targets = selectedDepotIds();
-        if (!targets.length){
-          showToast('Select at least one depot.', 'error');
-          return;
-        }
-        const meta = currentFilesMeta();
-        const manifest = computeManifestData(tableData);
-        pushGlueEl.disabled = true;
-        pushFinalEl.disabled = true;
-        try{
-          await Promise.all(targets.map(userId => {
-            return storeGlueDataForUser(userId, entries, meta, { tableData, manifest });
-          }));
-          window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix: 'admin', kind: 'glue' } }));
-          showToast(`Pushed schedule to ${targets.length} depot(s).`, 'success');
-        }catch(err){
-          console.error('Failed to push schedule', err);
-          showToast('Failed to push schedule to depot(s).', 'error');
-        }finally{
-          pushGlueEl.disabled = false;
-          pushFinalEl.disabled = false;
+          pushAllEl.disabled = false;
         }
       }
 
       pushFinalEl.addEventListener('click', pushFinal);
-      pushGlueEl.addEventListener('click', pushGlue);
+      pushAllEl.addEventListener('click', ()=>{
+        const allDepots = USERS.filter(user => user.role === 'depot').map(user => user.id);
+        if (!allDepots.length){
+          showToast('No depots configured.', 'error');
+          return;
+        }
+        pushFinal(allDepots);
+      });
       reportsTable.addEventListener('click', event=>{
         handleReportAction(event).catch(err => console.error(err));
       });
@@ -1648,64 +1728,44 @@
         }
       }
 
-      const finalModule = MarkingModule('final');
-      let glueModule  = null;
-      let adminModule   = null;
-
-      const glueTabBtn = document.getElementById('tab-glue');
-      if (user.role === 'admin' || user.role === 'glue'){
-        if (glueTabBtn) glueTabBtn.style.display = '';
-        glueModule = MarkingModule('glue');
-      } else if (glueTabBtn){
-        glueTabBtn.style.display = 'none';
-      }
-
+      const finalTabEl = document.getElementById('tab-final');
+      const finalPanelEl = document.getElementById('panel-final');
       const adminTabBtn = document.getElementById('tab-admin');
-      if (user.role === 'admin' && adminTabBtn){
-        adminTabBtn.style.display = '';
+      const adminPanelEl = document.getElementById('panel-admin');
+
+      const finalModule = MarkingModule('final');
+      let adminModule = null;
+
+      if (user.role === 'admin'){
+        if (adminTabBtn) adminTabBtn.style.display = '';
         adminModule = AdminModule();
-      } else if (adminTabBtn){
-        adminTabBtn.style.display = 'none';
+        if (finalTabEl) finalTabEl.style.display = 'none';
+        if (finalPanelEl) finalPanelEl.style.display = 'none';
+      }else{
+        if (adminTabBtn) adminTabBtn.style.display = 'none';
+        if (adminPanelEl) adminPanelEl.classList.remove('active');
       }
 
-      let activeTab = glueModule ? (user.role === 'glue' ? 'glue' : 'final') : 'final';
-      if (adminModule) activeTab = 'admin';
+      let activeTab = 'final';
+      if (adminModule){
+        activeTab = 'admin';
+      }
 
       function activate(which){
         activeTab = which;
-        const map = {
-          final: { tab:'#tab-final', panel:'#panel-final', focus: finalModule.focus }
-        };
-        if (glueModule){
-          map.glue = { tab:'#tab-glue', panel:'#panel-glue', focus: glueModule.focus };
-        }
-        if (adminModule){
-          map.admin = { tab:'#tab-admin', panel:'#panel-admin', focus: adminModule.focus };
-        }
-        const finalTabEl = document.getElementById('tab-final');
-        const glueTabEl  = document.getElementById('tab-glue');
-        const adminTabEl = document.getElementById('tab-admin');
-        const finalPanel = document.getElementById('panel-final');
-        const gluePanel  = document.getElementById('panel-glue');
-        const adminPanel = document.getElementById('panel-admin');
-        if (!finalTabEl || !glueTabEl || !finalPanel || !gluePanel) return;
-        finalTabEl.setAttribute('aria-selected','false');
-        glueTabEl.setAttribute('aria-selected','false');
-        finalPanel.classList.remove('active');
-        gluePanel.classList.remove('active');
-        if (adminTabEl && adminPanel){
-          adminTabEl.setAttribute('aria-selected','false');
-          adminPanel.classList.remove('active');
-        }
-        const conf = map[which];
-        if (!conf) return;
-        document.querySelector(conf.tab)?.setAttribute('aria-selected','true');
-        document.querySelector(conf.panel)?.classList.add('active');
-        conf.focus();
+        const tabs = { final: finalTabEl, admin: adminTabBtn };
+        const panels = { final: finalPanelEl, admin: adminPanelEl };
+        Object.entries(tabs).forEach(([,tab])=> tab?.setAttribute('aria-selected','false'));
+        Object.entries(panels).forEach(([,panel])=> panel?.classList.remove('active'));
+        if (tabs[which]) tabs[which].setAttribute('aria-selected','true');
+        if (panels[which]) panels[which].classList.add('active');
+        if (which === 'final') finalModule.focus();
+        if (which === 'admin' && adminModule) adminModule.focus();
       }
 
-      document.getElementById('tab-final')?.addEventListener('click', ()=>activate('final'));
-      if (glueModule) document.getElementById('tab-glue')?.addEventListener('click',  ()=>activate('glue'));
+      if (finalTabEl){
+        finalTabEl.addEventListener('click', ()=>activate('final'));
+      }
       if (adminModule && adminTabBtn){
         adminTabBtn.addEventListener('click', ()=>activate('admin'));
       }
@@ -1714,7 +1774,6 @@
 
       window.addEventListener('focus', ()=>{
         if (activeTab === 'final') finalModule.focus();
-        else if (activeTab === 'glue' && glueModule) glueModule.focus();
         else if (activeTab === 'admin' && adminModule) adminModule.focus();
       });
     }
