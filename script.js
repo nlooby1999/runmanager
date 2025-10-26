@@ -160,40 +160,6 @@
       }
     }
 
-    async function storeGlueDataForUser(userId, scheduleEntries, filesMeta, options = {}){
-      const { tableData = [], manifest = null } = options || {};
-      const sanitizedTable = sanitizeTableData(tableData);
-      const manifestSafe = manifest || computeManifestData(sanitizedTable);
-      const generated = manifestSafe?.generated || {};
-      const rowLookup = manifestSafe?.rowLookup || {};
-      const payload = {
-        scheduleEntries,
-        filesMeta,
-        tableData: sanitizedTable,
-        generated,
-        rowLookup
-      };
-      if (SUPABASE_ENABLED){
-        const { error } = await supabase
-          .from('depot_manifests')
-          .insert({
-            depot_id: userId,
-            kind: 'glue',
-            payload,
-            uploaded_by: currentUser?.id || 'admin'
-          });
-        if (error) throw error;
-      } else {
-        const base = suffix => `drm_${userId}_glue_${suffix}`;
-        localStorage.setItem(base('schedule_v1'), JSON.stringify(scheduleEntries));
-        localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
-        localStorage.setItem(base('table_v2'), JSON.stringify(sanitizedTable));
-        localStorage.setItem(base('generated_v2'), JSON.stringify(generated));
-        localStorage.setItem(base('rowlookup_v2'), JSON.stringify(rowLookup));
-        localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
-      }
-    }
-
     const REPORTS_KEY = 'drm_admin_reports_v1';
     const loadReportsLocal = () => {
       try{
@@ -853,12 +819,11 @@
 
         if (fetchRemote && SUPABASE_ENABLED){
           try{
-            const kind = prefix === 'final' ? 'final' : 'glue';
             const { data, error } = await supabase
               .from('depot_manifests')
               .select('payload, created_at')
               .eq('depot_id', currentUser?.id || 'unknown')
-              .eq('kind', kind)
+              .eq('kind', 'final')
               .order('created_at', { ascending:false })
               .limit(1)
               .maybeSingle();
@@ -890,10 +855,6 @@
         }else{
           generated = {};
           rowLookup = {};
-        }
-
-        if (prefix === 'glue' && !scheduleEntries.length && tableData.length){
-          scheduleEntries = computeScheduleEntries(tableData);
         }
 
         if (!hasRunsheetUI){
@@ -1339,9 +1300,7 @@
       }
 
       clearEl.addEventListener('click', ()=>{
-        const promptMsg = prefix === 'final'
-          ? 'This will remove all loaded runsheets, scans, and notes for Final Marking. Are you sure?'
-          : 'This will clear all data for this tab. Continue?';
+        const promptMsg = 'This will remove all loaded runsheets, scans, and notes for Final Marking. Are you sure?';
         if(!confirm(promptMsg)) return;
         reset(true);
         scanEl.value='';
@@ -1353,7 +1312,7 @@
       if (hasScheduleUI && !hasRunsheetUI && typeof window !== 'undefined'){
         window.addEventListener('drm:runsheet-updated', event=>{
           const prefixDetail = event?.detail?.prefix;
-          const shouldFetch = SUPABASE_ENABLED && (prefixDetail === 'admin' || prefixDetail === 'glue');
+          const shouldFetch = SUPABASE_ENABLED && prefixDetail === 'admin';
           refreshSchedule({ fetchRemote: shouldFetch });
         });
       }
@@ -1363,46 +1322,30 @@
           toast('Nothing to report yet.', 'error');
           return;
         }
+        if (tableData.length <= 1){
+          toast('No manifest entries yet.', 'info');
+          return;
+        }
         const esc = v => {
           const s = (v??'')==='' ? '-' : String(v);
           return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
         };
 
-        let headers = MANIFEST_HEADERS;
-        let dataRows = [];
-        if (prefix === 'final'){
-          if (tableData.length <= 1){
-            toast('No manifest entries yet.', 'info');
-            return;
-          }
-          headers = [...MANIFEST_HEADERS, 'Notes', 'Status'];
-          const statusBySo = {};
-          Object.keys(generated).forEach(so=>{
-            const expected = generated[so]?.length ?? 0;
-            const counted = scanned[so]?.size ?? 0;
-            statusBySo[so] = expected > 0 && counted >= expected ? 'Complete' : 'Not Complete';
-          });
-          dataRows = tableData.slice(1).map((row, idx)=>{
-            const cells = manifestRowToCells(row);
-            const so = normSO(row[COL_SO]);
-            const note = notes[getRowKey(idx)] || '';
-            cells.push(note || '-');
-            cells.push(statusBySo[so] || 'Not Complete');
-            return cells;
-          });
-        }else{
-          if (tableData.length <= 1){
-            toast('No entries in the schedule yet.', 'info');
-            return;
-          }
-          headers = [...MANIFEST_HEADERS, 'Notes'];
-          dataRows = tableData.slice(1).map((row, idx) => {
-            const cells = manifestRowToCells(row);
-            const note = notes[getRowKey(idx)] || '';
-            cells.push(note || '-');
-            return cells;
-          });
-        }
+        const headers = [...MANIFEST_HEADERS, 'Notes', 'Status'];
+        const statusBySo = {};
+        Object.keys(generated).forEach(so=>{
+          const expected = generated[so]?.length ?? 0;
+          const counted = scanned[so]?.size ?? 0;
+          statusBySo[so] = expected > 0 && counted >= expected ? 'Complete' : 'Not Complete';
+        });
+        const dataRows = tableData.slice(1).map((row, idx)=>{
+          const cells = manifestRowToCells(row);
+          const so = normSO(row[COL_SO]);
+          const note = notes[getRowKey(idx)] || '';
+          cells.push(note || '-');
+          cells.push(statusBySo[so] || 'Not Complete');
+          return cells;
+        });
 
         let csv = headers.join(',') + '\n';
         dataRows.forEach(cells => { csv += cells.slice(0, headers.length).map(esc).join(',') + '\n'; });
@@ -1411,10 +1354,10 @@
           id: `rep_${Date.now()}_${Math.random().toString(16).slice(2,10)}`,
           depotId: currentUser?.id || 'unknown',
           depotName: currentUser?.name || 'Unknown Depot',
-          kind: prefix,
+          kind: 'final',
           created: new Date().toISOString(),
           rows: dataRows.length,
-          filename: `${prefix}_${currentUser?.id || 'unknown'}_${Date.now()}.csv`,
+          filename: `final_${currentUser?.id || 'unknown'}_${Date.now()}.csv`,
           csv: encodeCSV(csv)
         };
         try{
@@ -1537,7 +1480,7 @@
                 submitted = date.toLocaleString();
               }
             }
-            const kindLabel = report.kind === 'final' ? 'Final' : 'Glueline';
+            const kindLabel = 'Final';
             html += `<tr data-report-id="${report.id}">` +
                     `<td>${report.depotName || report.depotId}</td>` +
                     `<td>${kindLabel}</td>` +
