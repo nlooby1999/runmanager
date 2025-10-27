@@ -373,6 +373,8 @@
       const scheduleWrap   = document.getElementById(prefix + '_schedule_table');
       const summaryEl      = document.getElementById(prefix + '_scanned_summary');
       const filterClearEl  = document.getElementById(prefix + '_filter_clear');
+      const filtersDisabled = prefix === 'final';
+      const runFilterEl    = filtersDisabled ? null : document.getElementById(prefix + '_run_filter');
       const canUpload      = currentUser?.role === 'admin';
 
       const hasRunsheetUI = Boolean(fileEl && fileMeta && tableWrap);
@@ -407,6 +409,7 @@
       let loadedFiles = [];
       let scheduleEntries = [];
       let filteredSO = null;
+      let runFilter = 'all';
       let lastScanInfo = null;
       let autoScanTimer = null;
       let notes = {};
@@ -447,7 +450,10 @@
         return hydrated;
       }
 
-      if (filterClearEl) filterClearEl.style.display = 'none';
+      if (filterClearEl){
+        filterClearEl.style.display = 'none';
+        if (filtersDisabled) filterClearEl.remove();
+      }
       if (summaryEl) summaryEl.style.display = 'none';
 
       if (!canUpload){
@@ -546,7 +552,7 @@
       }
 
       function updateFilterUI(){
-        if (!filterClearEl) return;
+        if (!filterClearEl || filtersDisabled) return;
         filterClearEl.style.display = filteredSO ? '' : 'none';
       }
 
@@ -577,7 +583,7 @@
 
       function applyScheduleFilter(so){
         if (!hasScheduleUI) return;
-        filteredSO = so;
+        filteredSO = filtersDisabled ? null : so;
         renderScheduleTable();
         updateScheduleMeta();
         updateScanAvailability();
@@ -1306,7 +1312,7 @@
 
       if (canUpload && fileEl) fileEl.addEventListener('change', (e)=>{ handleFiles(e.target.files); });
       if (canUpload && scheduleFileEl) scheduleFileEl.addEventListener('change', (e)=>{ handleSchedule(e.target.files); });
-      if (filterClearEl){
+      if (!filtersDisabled && filterClearEl){
         filterClearEl.addEventListener('click', ()=>{ clearScheduleFilter(); });
         filterClearEl.addEventListener('keydown', (event)=>{
           if (event.key === 'Enter' || event.key === ' '){
