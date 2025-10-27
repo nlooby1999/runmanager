@@ -250,6 +250,16 @@
         }
       }
     }
+    function generateClientUuid(){
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'){
+        return crypto.randomUUID();
+      }
+      const hex = [];
+      for (let i = 0; i < 8; i++){
+        hex.push(((Math.random() * 0xffff) | 0).toString(16).padStart(4, '0'));
+      }
+      return `${hex[0]}${hex[1]}-${hex[2]}-${hex[3]}-${hex[4]}-${hex[5]}${hex[6]}${hex[7]}`;
+    }
 
     const USERS = [
       { id:'albury',   name:'Albury Depot', role:'depot' },
@@ -1374,7 +1384,7 @@
         dataRows.forEach(cells => { csv += cells.slice(0, headers.length).map(esc).join(',') + '\n'; });
 
         const report = {
-          id: `rep_${Date.now()}_${Math.random().toString(16).slice(2,10)}`,
+          id: generateClientUuid(),
           depotId: currentUser?.id || 'unknown',
           depotName: currentUser?.name || 'Unknown Depot',
           kind: 'final',
