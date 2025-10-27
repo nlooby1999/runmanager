@@ -1621,18 +1621,18 @@
       }
 
       function renderTargets(){
-        targetsWrap.innerHTML = '';
-        const select = document.createElement('select');
-        select.id = 'admin_target_select';
-        select.className = 'run-filter';
+        if (!targetsWrap) return;
+        const select = document.getElementById('admin_target_select');
+        if (!select) return;
+        select.innerHTML = '';
         const depots = USERS.filter(u => u.role === 'depot');
-        depots.forEach(user=>{
-          const option = document.createElement('option');
-          option.value = user.id;
-          option.textContent = user.name;
-          select.appendChild(option);
-        });
         if (depots.length){
+          depots.forEach(user=>{
+            const option = document.createElement('option');
+            option.value = user.id;
+            option.textContent = user.name;
+            select.appendChild(option);
+          });
           select.selectedIndex = 0;
           select.disabled = false;
         }else{
@@ -1643,11 +1643,10 @@
           select.appendChild(placeholder);
           select.disabled = true;
         }
-        targetsWrap.appendChild(select);
       }
 
       function selectedDepotIds(){
-        const select = targetsWrap.querySelector('select');
+        const select = document.getElementById('admin_target_select');
         if (!select) return [];
         return select.value ? [select.value] : [];
       }
