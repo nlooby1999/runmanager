@@ -419,6 +419,34 @@
         return match ? match[0] : '';
       };
 
+      async function fetchLatestDepotManifest(depotId){
+        if (!SUPABASE_ENABLED || !depotId) return null;
+        const { data, error } = await supabase
+          .from('depot_manifests')
+          .select('payload, created_at')
+          .eq('depot_id', depotId)
+          .eq('kind', 'final')
+          .order('created_at', { ascending:false })
+          .limit(1);
+        if (error) throw error;
+        return Array.isArray(data) && data.length ? data[0] : null;
+      }
+
+      function hydrateStateFromPayload(payload){
+        if (!payload || typeof payload !== 'object') return false;
+        let hydrated = false;
+        if (Array.isArray(payload.tableData)){
+          tableData = payload.tableData;
+          hydrated = true;
+        }
+        if (Array.isArray(payload.filesMeta)) loadedFiles = payload.filesMeta;
+        if (payload.generated && typeof payload.generated === 'object') generated = payload.generated;
+        if (payload.rowLookup && typeof payload.rowLookup === 'object') rowLookup = payload.rowLookup;
+        if (Array.isArray(payload.scheduleEntries)) scheduleEntries = payload.scheduleEntries;
+        else if (Array.isArray(payload.entries)) scheduleEntries = payload.entries;
+        return hydrated;
+      }
+
       if (filterClearEl) filterClearEl.style.display = 'none';
       if (summaryEl) summaryEl.style.display = 'none';
 
@@ -797,6 +825,7 @@
       }
 
       async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false } = {}){
+        const depotId = currentUser?.id || 'unknown';
         tableData = [];
         generated = {};
         rowLookup = {};
@@ -819,23 +848,11 @@
 
         if (fetchRemote && SUPABASE_ENABLED){
           try{
-            const { data, error } = await supabase
-              .from('depot_manifests')
-              .select('payload, created_at')
-              .eq('depot_id', currentUser?.id || 'unknown')
-              .eq('kind', 'final')
-              .order('created_at', { ascending:false })
-              .limit(1)
-              .maybeSingle();
-            if (error) throw error;
-            if (data?.payload){
-              const payload = data.payload || {};
-              if (Array.isArray(payload.tableData)) tableData = payload.tableData;
-              if (Array.isArray(payload.filesMeta)) loadedFiles = payload.filesMeta;
-              if (payload.generated) generated = payload.generated;
-              if (payload.rowLookup) rowLookup = payload.rowLookup;
-              if (Array.isArray(payload.scheduleEntries)) scheduleEntries = payload.scheduleEntries;
-              else if (Array.isArray(payload.entries)) scheduleEntries = payload.entries;
+            const remote = await fetchLatestDepotManifest(depotId);
+            if (remote?.payload){
+              hydrateStateFromPayload(remote.payload);
+            } else if (!remote && !tableData.length && !isInitial){
+              showToast('No shared manifest available yet.', 'info');
             }
           }catch(err){
             console.error('Supabase fetch error', err);
