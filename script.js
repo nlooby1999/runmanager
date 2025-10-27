@@ -1,461 +1,1983 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Delivery Run Manager — Final Marking</title>
-  <style>
-    :root{
-      color-scheme:dark;
-      --bg:#1a1b23; --bg-alt:#252732; --card:rgba(35,37,46,.9);
-      --card-border:rgba(132,142,160,.22); --accent:#58a6ff; --accent-strong:#1f6feb;
-      --text:#f7f7f9; --text-subtle:#c9ced8; --outline:rgba(88,166,255,.58);
-      --table-border:rgba(132,142,160,.18); --row-alt:rgba(48,50,60,.58);
-      --partial:rgba(214,188,67,.26); --partial-border:rgba(214,188,67,.58);
-      --complete:rgba(88,176,120,.26); --complete-border:rgba(60,156,100,.6);
-      --danger:rgba(185,70,70,.26); --danger-text:#f9b3b3;
-    }
-    *{box-sizing:border-box}
-    body{
-      margin:0;min-height:100vh;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-      background:radial-gradient(circle at top, rgba(176,186,210,.18), transparent 48%),
-                 radial-gradient(circle at 25% 80%, rgba(140,148,168,.14), transparent 58%),
-                 linear-gradient(180deg,#1a1b23 0%,#21232d 45%,#272933 100%);
-      color:var(--text);letter-spacing:.01em;
-    }
-    .app{max-width:1200px;margin:0 auto;padding:clamp(1.5rem,5vw,3.5rem) clamp(1rem,4vw,3.25rem) 4rem}
-    header{text-align:center;margin-bottom:clamp(1.2rem,4vw,2rem)}
-    header h1{margin:0;font-size:clamp(2.1rem,6vw,3.1rem);letter-spacing:.08em;text-transform:uppercase;color:var(--text);
-       text-shadow:0 16px 38px rgba(88,166,255,.28)}
-    header p{margin:.7rem auto 0;max-width:62ch;font-size:clamp(1.05rem,3.2vw,1.2rem);line-height:1.6;color:var(--text-subtle)}
-    .top-bar{
-      display:flex;
-      justify-content:flex-end;
-      align-items:center;
-      gap:.6rem;
-      flex-wrap:wrap;
-      margin-bottom:.5rem;
-    }
-    .logout-btn{
-      padding:.6rem 1.1rem;border-radius:12px;border:1px solid rgba(220,94,94,.6);
-      background:rgba(220,94,94,.28);color:#ffe5e5;font-weight:600;letter-spacing:.05em;
-      cursor:pointer;display:none;align-items:center;gap:.4rem;text-transform:uppercase;
-    }
-    .logout-btn:hover{background:rgba(220,94,94,.36)}
+(() => {
+  function init(){
+    // Column positions from the manifest sheets
+    const COL_SO = 4, COL_FP = 10, COL_CH = 11, COL_FL = 12;
 
-    /* Tabs */
-    .tabs{display:flex;gap:.6rem;justify-content:center;margin:.8rem 0 1.2rem;flex-wrap:wrap}
-    .tab-btn{
-      appearance:none;border:1px solid rgba(88,166,255,.35);background:rgba(24,24,30,.78);
-      color:var(--text);padding:.55rem 1rem;border-radius:.8rem;cursor:pointer;font-weight:700;letter-spacing:.02em;
-      text-transform:uppercase;
+    let loadingXLSX = null;
+    async function ensureXLSX(){
+      if (typeof XLSX !== 'undefined') return true;
+      if (!loadingXLSX){
+        loadingXLSX = new Promise((resolve, reject)=>{
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          script.async = true;
+          script.crossOrigin = 'anonymous';
+          script.referrerPolicy = 'no-referrer';
+          script.dataset.fallback = 'xlsx';
+          script.onload = ()=> resolve(true);
+          script.onerror = (err)=> reject(err || new Error('Failed to load fallback XLSX parser'));
+          document.head.appendChild(script);
+        });
+      }
+      try{
+        await loadingXLSX;
+      }catch(err){
+        console.error('Unable to load XLSX fallback', err);
+        loadingXLSX = null;
+        return false;
+      }
+      return typeof XLSX !== 'undefined';
     }
-    .tab-btn[aria-selected="true"]{
-      background:linear-gradient(120deg,var(--accent),var(--accent-strong));border-color:rgba(88,166,255,.55)
-    }
-    .panel{display:none}
-    .panel.active{display:block}
+    const supabaseConfig = window.SUPABASE_CONFIG || null;
+    const supabase = (typeof window.supabase !== 'undefined' && supabaseConfig?.url && supabaseConfig?.anonKey)
+      ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
+      : null;
+    const SUPABASE_ENABLED = !!supabase;
 
-    /* Card & controls */
-    .card{background:var(--card);border-radius:22px;border:1px solid var(--card-border);
-      box-shadow:0 28px 60px rgba(0,0,0,.55);backdrop-filter:blur(22px);padding:clamp(1.2rem,5vw,2.2rem);margin-bottom:1rem}
-    .controls{display:grid;gap:clamp(.8rem,2.2vw,1.1rem)}
-    .file-input,.scanner-input,.clear-btn,.report-btn{
-      width:100%;font-size:1.05rem;padding:.9rem 1.1rem;border-radius:14px;border:1px solid transparent;
-      background:rgba(24,24,30,.78);color:var(--text);transition:transform .18s ease,box-shadow .18s ease,background .2s ease,border-color .2s ease;
-      text-align:center;font-weight:600;letter-spacing:.02em;text-transform:uppercase;cursor:pointer;
-    }
-    .file-input,.scanner-input{border-color:rgba(122,128,144,.35);background:rgba(18,18,24,.92);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
-    .scanner-input::placeholder{color:rgba(140,146,160,.7)}
-    .clear-btn{background:var(--danger);border-color:rgba(185,70,70,.5);color:var(--danger-text)}
-    .report-btn{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.45);color:var(--accent)}
-    .file-meta{font-size:.9rem;color:var(--text-subtle);text-align:center;margin-top:.2rem}
-    .admin-targets{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.4rem}
-    .admin-targets label{display:flex;align-items:center;gap:.35rem;padding:.45rem .6rem;border:1px solid rgba(124,132,150,.3);
-      border-radius:10px;background:rgba(28,28,34,.7);font-size:.9rem;cursor:pointer}
-    .admin-targets input[type="checkbox"]{width:16px;height:16px;cursor:pointer}
-    body.auth-locked{overflow:hidden}
-    body.auth-locked .app{filter:blur(6px);pointer-events:none;user-select:none}
-    .scanned-summary{
-      margin:.9rem 0 0;
-      padding:1rem 1.1rem;
-      border-radius:16px;
-      border:1px solid rgba(120,130,150,.32);
-      background:rgba(22,23,30,.94);
-      box-shadow:0 18px 32px rgba(5,6,10,.55);
-      font-size:1.05rem;
-      letter-spacing:.015em;
-      display:none;
-      position:sticky;
-      top:0;
-      z-index:6;
-      backdrop-filter:blur(14px);
-    }
-    .notes-cell{
-      text-align:left;
-      min-width:200px;
-      padding-inline:1.1rem;
-    }
-    .note-display{
-      margin-bottom:.35rem;
-      font-size:.9rem;
-      line-height:1.4;
-      word-break:break-word;
-    }
-    .note-placeholder{
-      color:var(--text-subtle);
-      font-style:italic;
-    }
-    .note-actions{
-      display:flex;
-      flex-wrap:wrap;
-      gap:.4rem;
-    }
-    .run-filter-group{
-      display:flex;
-      flex-direction:column;
-      gap:.35rem;
-      text-align:left;
-    }
-    .run-filter-group label{
-      font-size:.72rem;
-      letter-spacing:.18em;
-      text-transform:uppercase;
-      color:var(--text-subtle);
-    }
-    .run-filter{
-      appearance:none;
-      width:100%;
-      padding:.65rem .8rem;
-      border-radius:12px;
-      border:1px solid rgba(132,142,160,.32);
-      background:rgba(24,24,30,.92);
-      color:var(--text);
-      font-size:.95rem;
-      letter-spacing:.02em;
-    }
-    .run-filter:disabled{
-      opacity:.6;
-      cursor:not-allowed;
-    }
-    .note-btn,
-    .manual-btn{
-      padding:.32rem .65rem;
-      border-radius:10px;
-      border:1px solid rgba(88,166,255,.45);
-      background:rgba(88,166,255,.12);
-      color:var(--accent);
-      font-size:.75rem;
-      font-weight:600;
-      letter-spacing:.05em;
-      text-transform:uppercase;
-      cursor:pointer;
-      transition:background .2s ease,border-color .2s ease,transform .18s ease;
-    }
-    .note-btn:hover{background:rgba(88,166,255,.18);}
-    .manual-btn{
-      border-color:rgba(74,222,128,.45);
-      background:rgba(74,222,128,.14);
-      color:#4ade80;
-    }
-    .manual-btn:hover{background:rgba(74,222,128,.22);}
-    .status-card{
-      margin-top:.85rem;
-      padding:1rem 1.1rem;
-      border-radius:14px;
-      border:1px solid rgba(122,132,150,.28);
-      background:rgba(20,21,27,.9);
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
-      display:grid;
-      gap:.55rem;
-    }
-    .status-row{
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      font-size:.95rem;
-      letter-spacing:.01em;
-    }
-    .status-label{
-      text-transform:uppercase;
-      font-size:.72rem;
-      letter-spacing:.24em;
-      color:var(--text-subtle);
-    }
-    .status-value{
-      font-weight:700;
-      letter-spacing:.05em;
-    }
-    .status-route{
-      font-size:2.4rem;
-      font-weight:700;
-      letter-spacing:.22em;
-      text-align:center;
-      text-transform:uppercase;
-      color:var(--accent);
-    }
-    .status-card--glueline .status-route{
-      font-size:clamp(8rem, 16vw, 12rem);
-      letter-spacing:.38em;
-    }
-    .status-route--missing{
-      font-size:1.05rem;
-      color:var(--danger-text);
-      letter-spacing:.08em;
-    }
-    .status-card--glueline .status-route--missing{
-      font-size:clamp(2.4rem, 6vw, 3.8rem);
-      letter-spacing:.24em;
-    }
-    .status-meta{
-      text-align:center;
-      font-size:.95rem;
-      letter-spacing:.05em;
-      color:var(--text-subtle);
-    }
-    .status-progress{
-      display:inline-block;
-      margin-left:.45rem;
-      font-size:1.05rem;
-      font-weight:700;
-      color:var(--text);
-      letter-spacing:.08em;
-    }
-    .status-card--glueline .status-row{
-      flex-direction:column;
-      gap:.4rem;
-      align-items:center;
-      justify-content:center;
-    }
-    .status-card--glueline .status-label{
-      font-size:1rem;
-      letter-spacing:.3em;
-    }
-    .status-card--glueline .status-value{
-      font-size:2.6rem;
-      letter-spacing:.12em;
-    }
-    .card.glueline-condensed{
-      display:flex;
-      flex-wrap:wrap;
-      gap:1.5rem;
-      align-items:flex-start;
-    }
-    .card.glueline-condensed .controls{
-      flex:1 1 360px;
-      display:grid;
-      grid-template-columns:1fr;
-    }
-    .card.glueline-condensed .status-card{
-      margin-top:0;
-      width:100%;
-      order:2;
-    }
-    .card.glueline-condensed .scanned-summary{
-      flex:1 1 100%;
-    }
-    .glueline-log{
-      flex:0 0 320px;
-      max-width:360px;
-      border-radius:16px;
-      border:1px solid rgba(148,163,184,.24);
-      background:rgba(20,26,36,.85);
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
-      padding:1rem 1.1rem;
-      max-height:460px;
-      overflow:auto;
-    }
-    .glueline-log-title{
-      font-size:.95rem;
-      font-weight:700;
-      letter-spacing:.18em;
-      text-transform:uppercase;
-      margin-bottom:.8rem;
-      color:var(--text-subtle);
-    }
-    .glueline-log-body{
-      display:flex;
-      flex-direction:column;
-      gap:.65rem;
-    }
-    .glueline-log-entry{
-      border-radius:12px;
-      border:1px solid rgba(88,166,255,.18);
-      background:rgba(15,25,38,.75);
-      padding:.65rem .75rem;
-    }
-    .glueline-log-row{
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      font-size:.9rem;
-      font-weight:600;
-      letter-spacing:.04em;
-      color:var(--text);
-      margin-bottom:.35rem;
-    }
-    .glueline-log-time{
-      font-size:.8rem;
-      color:var(--text-subtle);
-      letter-spacing:.08em;
-    }
-    .glueline-log-meta{
-      font-size:.82rem;
-      letter-spacing:.05em;
-      color:var(--text-subtle);
-      margin-bottom:.25rem;
-    }
-    .glueline-log-code{
-      font-size:.95rem;
-      font-weight:700;
-      letter-spacing:.08em;
-      color:var(--accent);
-      word-break:break-all;
-    }
-    .glueline-log-empty{
-      font-size:.85rem;
-      letter-spacing:.05em;
-      color:var(--text-subtle);
-    }
-    .glueline-clear-btn{
-      width:auto!important;
-      padding:.6rem 1.1rem;
-      border-radius:12px;
-      border:1px solid rgba(220,94,94,.6);
-      background:rgba(220,94,94,.28);
-      color:#ffe5e5;
-      font-weight:600;
-      letter-spacing:.05em;
-      cursor:pointer;
-      display:inline-flex;
-      align-items:center;
-      gap:.35rem;
-      text-transform:uppercase;
-    }
-    .glueline-clear-btn:focus{
-      outline:2px solid rgba(220,94,94,.6);
-      outline-offset:2px;
-    }
-    .admin-targets{
-      display:block;
-    }
-    .auth-overlay{
-      position:fixed;inset:0;background:rgba(11,12,15,.92);display:none;
-      align-items:center;justify-content:center;z-index:999;
-    }
-    .auth-overlay.show{display:flex}
-    .auth-card{
-      background:rgba(24,24,32,.95);border-radius:22px;border:1px solid rgba(122,132,150,.28);
-      box-shadow:0 32px 70px rgba(0,0,0,.58);padding:2.2rem;min-width:280px;max-width:360px;
-      display:grid;gap:1rem;font-size:1rem;color:var(--text);
-    }
-    .auth-card h2{margin:0;font-size:1.4rem;text-align:center;letter-spacing:.04em}
-    .auth-card label{display:flex;flex-direction:column;gap:.4rem;font-size:.95rem;color:var(--text-subtle)}
-    .auth-card select,.auth-card input{
-      padding:.75rem .9rem;border-radius:12px;border:1px solid rgba(148,163,184,.35);
-      background:rgba(11,17,32,.92);color:var(--text);font-size:1rem;
-    }
-    .auth-error{color:#fca5a5;font-size:.9rem;display:none;text-align:center}
-    .auth-card button{
-      margin-top:.5rem;padding:.75rem 1rem;border-radius:12px;border:1px solid rgba(88,166,255,.55);
-      background:linear-gradient(120deg,var(--accent),var(--accent-strong));color:#0f172a;
-      font-size:1rem;font-weight:700;cursor:pointer;
-    }
-    .auth-card button:disabled{opacity:.6;cursor:not-allowed}
+    const logoutBtn = document.getElementById('auth_logout');
 
-    /* Table */
-    .table-wrapper{margin-top:clamp(1.2rem,3vw,1.8rem);border-radius:20px;border:1px solid rgba(148,163,184,.2);background:var(--bg-alt);
-      box-shadow:inset 0 1px 0 rgba(255,255,255,.05);overflow:hidden}
-    .table-scroll{overflow:auto;-webkit-overflow-scrolling:touch}
-    table{width:100%;min-width:760px;border-collapse:collapse;color:inherit}
-    thead{background:linear-gradient(120deg, rgba(88,166,255,.22), rgba(31,111,235,.18))}
-    th,td{padding:.75rem 1rem;text-align:center;border-bottom:1px solid var(--table-border);font-size:.95rem}
-    tbody tr:nth-child(odd){background:var(--row-alt)}
-    tbody tr:last-child td{border-bottom:none}
-    .partial{background:var(--partial)!important;box-shadow:inset 0 0 0 1px var(--partial-border)}
-    .completed{background:var(--complete)!important;box-shadow:inset 0 0 0 1px var(--complete-border);color:#bbf7d0;font-weight:600}
+    const MANIFEST_HEADERS = ['Run','Drop','Zone','FP','Type','Sales Order','Name','Address','Suburb','Postcode','CH','FL','Weight','Date'];
+    const DISPLAY_INDEX_MAP = [0,1,2,10,14,4,5,6,7,8,11,12,13,3];
+    const normSO = v => (v == null ? '' : String(v).trim().toUpperCase());
+    const coerceCount = v => {
+      if (v == null || v === '') return 0;
+      const num = Number(v);
+      if (Number.isFinite(num)) return Math.max(0, num);
+      const parsed = parseInt(String(v), 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    };
 
-    /* Responsive */
-    @media (max-width:720px){ .card{padding:1.2rem} table{min-width:640px} th,td{font-size:.85rem;padding:.6rem .8rem} }
-    @media (max-width:420px){ .app{padding-inline:1rem} table{min-width:540px} th,td{font-size:.8rem} }
-  </style>
-</head>
-<body>
-  <div class="app">
-    <div class="top-bar">
-      <button id="auth_logout" class="logout-btn" type="button">Logout</button>
-    </div>
-    <header>
-      <h1>Delivery Run Manager</h1>
-    </header>
+    function manifestRowToCells(row){
+      const source = Array.isArray(row) ? row : [];
+      return DISPLAY_INDEX_MAP.map(idx=>{
+        const value = source[idx];
+        return (value == null || value === '') ? '-' : String(value);
+      });
+    }
 
-    <div class="tabs" role="tablist" aria-label="Marking Views">
-      <button id="tab-final" class="tab-btn" role="tab" aria-selected="true" aria-controls="panel-final">Final Marking</button>
-      <button id="tab-admin" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-admin" style="display:none;">Admin</button>
-    </div>
+    function computeManifestData(table){
+      const generated = {};
+      const rowLookup = {};
+      table.slice(1).forEach((row, idx)=>{
+        const so = normSO(row[COL_SO]);
+        if(!so) return;
+        (rowLookup[so] ||= []).push(idx);
+        const total = coerceCount(row[COL_FP]) + coerceCount(row[COL_CH]) + coerceCount(row[COL_FL]);
+        if(total<=0) return;
+        const arr = (generated[so] ||= []);
+        const start = arr.length;
+        for(let i=1;i<=total;i++) arr.push(`${so}${String(start+i).padStart(3,'0')}`);
+      });
+      return { generated, rowLookup };
+    }
 
-    <!-- Final Marking Panel -->
-    <section id="panel-final" class="panel active" role="tabpanel" aria-labelledby="tab-final">
-      <section class="card" aria-label="Final Marking controls">
-        <div class="controls">
-          <input type="file" id="final_file" class="file-input" accept=".xlsx,.xls" multiple />
-          <div class="file-meta" id="final_file_meta">No runsheet loaded.</div>
-          <input type="text" id="final_scan" class="scanner-input" placeholder="Scan or enter barcode" disabled
-                 autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go">
-          <div class="clear-btn" id="final_clear" tabindex="0">Clear Final</div>
-          <div class="report-btn" id="final_export" tabindex="0">Send Final Report</div>
-        </div>
-      </section>
-      <div id="final_scanned_summary" class="scanned-summary"></div>
-      <div id="final_table" class="table-wrapper"><div class="table-scroll"></div></div>
-    </section>
+    function computeScheduleEntries(table){
+      const headers = (table[0] || []).map(v => String(v ?? '').trim().toLowerCase());
+      const createdIdx = headers.findIndex(h => h === 'created from');
+      const entries = [];
+      table.slice(1).forEach(row=>{
+        const so = normSO(row[COL_SO]);
+        if(!so) return;
+        const created = createdIdx !== -1 ? row[createdIdx] : row[COL_SO];
+        entries.push({ createdFrom: created ?? '', so });
+      });
+      return entries;
+    }
 
-    <section id="panel-admin" class="panel" role="tabpanel" aria-labelledby="tab-admin">
-      <section class="card" aria-label="Administration controls">
-        <div class="controls">
-          <input type="file" id="admin_upload" class="file-input" accept=".xlsx,.xls" />
-          <div class="file-meta" id="admin_meta">No shared manifest uploaded.</div>
-          <div class="run-filter-group">
-            <label for="admin_target_select">Deliver to</label>
-            <div class="admin-targets" id="admin_targets"></div>
+    function rowHasMeaningfulData(row){
+      if (!Array.isArray(row)) return false;
+      return row.some(cell=>{
+        if (cell == null) return false;
+        if (typeof cell === 'number') return !Number.isNaN(cell);
+        return String(cell).trim() !== '';
+      });
+    }
+
+    function sanitizeTableData(table){
+      if (!Array.isArray(table) || !table.length) return [];
+      const header = Array.isArray(table[0]) ? table[0] : [];
+      const body = table.slice(1).filter(rowHasMeaningfulData);
+      return [header, ...body];
+    }
+
+    async function readWorkbookFile(file){
+      const buf = await file.arrayBuffer();
+      const wb  = XLSX.read(buf,{type:'array'});
+      const ws  = wb.Sheets[wb.SheetNames[0]];
+      return XLSX.utils.sheet_to_json(ws,{header:1});
+    }
+
+    function showToast(msg,type='info'){
+      const el=document.createElement('div');
+      el.textContent=msg;
+      el.role='status';
+      Object.assign(el.style,{
+        position:'fixed',left:'50%',top:'16px',transform:'translateX(-50%)',
+        padding:'10px 14px',borderRadius:'10px',zIndex:9999,fontSize:'14px',
+        border:'1px solid rgba(148,163,184,.3)',backdropFilter:'blur(8px)',
+        boxShadow:'0 10px 24px rgba(2,6,23,.4)',color:'#e2e8f0',background:'rgba(56,189,248,.12)'
+      });
+      if(type==='error'){el.style.background='rgba(248,113,113,.22)'; el.style.color='#fecaca';}
+      if(type==='success'){el.style.background='rgba(74,222,128,.22)'; el.style.color='#bbf7d0';}
+      document.body.appendChild(el);
+      setTimeout(()=>el.remove(),1600);
+    }
+
+    function escapeHTML(value){
+      return String(value ?? '')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+    }
+
+    async function storeFinalDataForUser(userId, tableData, filesMeta, manifestData){
+      const sanitizedTable = sanitizeTableData(tableData);
+      const manifest = manifestData || computeManifestData(sanitizedTable);
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase
+          .from('depot_manifests')
+          .insert({
+            depot_id: userId,
+            kind: 'final',
+            payload: {
+              tableData: sanitizedTable,
+              filesMeta,
+              generated: manifest.generated,
+              rowLookup: manifest.rowLookup
+            },
+            uploaded_by: currentUser?.id || 'admin'
+          });
+        if (error) throw error;
+      } else {
+        const base = suffix => `drm_${userId}_final_${suffix}`;
+        localStorage.setItem(base('table_v2'), JSON.stringify(sanitizedTable));
+        localStorage.setItem(base('generated_v2'), JSON.stringify(manifest.generated));
+        localStorage.setItem(base('rowlookup_v2'), JSON.stringify(manifest.rowLookup));
+        localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
+        localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+      }
+    }
+
+    const REPORTS_KEY = 'drm_admin_reports_v1';
+    const loadReportsLocal = () => {
+      try{
+        return JSON.parse(localStorage.getItem(REPORTS_KEY) || '[]');
+      }catch{
+        return [];
+      }
+    };
+    const saveReportsLocal = (list) => {
+      localStorage.setItem(REPORTS_KEY, JSON.stringify(list));
+    };
+
+    async function loadReports(){
+      if (SUPABASE_ENABLED){
+        const { data, error } = await supabase
+          .from('depot_reports')
+          .select('*')
+          .order('created_at', { ascending:false });
+        if (error) throw error;
+        return data || [];
+      }
+      return loadReportsLocal();
+    }
+
+    async function addReport(report){
+      if (SUPABASE_ENABLED){
+        const payload = {
+          id: report.id,
+          depot_id: report.depotId,
+          depot_name: report.depotName,
+          kind: report.kind,
+          rows: report.rows,
+          filename: report.filename,
+          csv: report.csv
+        };
+        if (report.created){
+          payload.created_at = report.created;
+        }
+        const { error } = await supabase.from('depot_reports').insert(payload);
+        if (error) throw error;
+        window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+        return;
+      }
+      const reports = loadReportsLocal();
+      reports.push(report);
+      saveReportsLocal(reports);
+      window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+    }
+
+    async function removeReport(reportId){
+      if (SUPABASE_ENABLED){
+        const { error } = await supabase
+          .from('depot_reports')
+          .delete()
+          .eq('id', reportId);
+        if (error) throw error;
+        window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+        return;
+      }
+      const reports = loadReportsLocal().filter(r => r.id !== reportId);
+      saveReportsLocal(reports);
+      window.dispatchEvent(new CustomEvent('drm:reports-updated'));
+    }
+    function encodeCSV(str){
+      try{
+        if (window.TextEncoder){
+          const bytes = new TextEncoder().encode(str);
+          let binary = '';
+          bytes.forEach(b => binary += String.fromCharCode(b));
+          return btoa(binary);
+        }
+      }catch{}
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+    function decodeCSV(b64){
+      try{
+        const binary = atob(b64);
+        if (window.TextDecoder){
+          const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+          return new TextDecoder().decode(bytes);
+        }
+        return decodeURIComponent(escape(binary));
+      }catch{
+        try{
+          return decodeURIComponent(escape(atob(b64)));
+        }catch{
+          return atob(b64);
+        }
+      }
+    }
+    function generateClientUuid(){
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'){
+        return crypto.randomUUID();
+      }
+      const hex = [];
+      for (let i = 0; i < 8; i++){
+        hex.push(((Math.random() * 0xffff) | 0).toString(16).padStart(4, '0'));
+      }
+      return `${hex[0]}${hex[1]}-${hex[2]}-${hex[3]}-${hex[4]}-${hex[5]}${hex[6]}${hex[7]}`;
+    }
+
+    const USERS = [
+      { id:'albury',   name:'Albury Depot', role:'depot' },
+      { id:'melbourne',name:'Melbourne Depot', role:'depot' },
+      { id:'sydney',   name:'Sydney Depot', role:'depot' },
+      { id:'brisbane', name:'Brisbane Depot', role:'depot' },
+      { id:'perth',    name:'Perth Depot', role:'depot' },
+      { id:'glueline', name:'Glueline',      role:'depot' },
+      { id:'admin',    name:'Administrator', role:'admin' }
+    ];
+    const PASSWORDS = {
+      default: 'Knowles40',
+      admin: '40knowles'
+    };
+    const AUTH_KEY = 'drm_auth_user_v1';
+    let currentUser = null;
+    let appStarted = false;
+
+    function setupAuth(onReady){
+      let resolved = false;
+      const overlay = document.getElementById('auth_overlay');
+      const form = document.getElementById('auth_form');
+      const userSelect = document.getElementById('auth_user');
+      const passInput = document.getElementById('auth_pass');
+      const errorEl = document.getElementById('auth_error');
+      const loginBtn = document.getElementById('auth_login');
+      if (!overlay || !form || !userSelect || !passInput || !errorEl || !loginBtn){
+        resolved = true;
+        onReady({ id:'anonymous', name:'Anonymous User' });
+        return;
+      }
+
+      if (!userSelect.dataset.populated){
+        USERS.forEach(user=>{
+          const option = document.createElement('option');
+          option.value = user.id;
+          option.textContent = user.name;
+          userSelect.appendChild(option);
+        });
+        userSelect.dataset.populated = 'true';
+      }
+
+      function setError(msg){
+        errorEl.textContent = msg || '';
+        errorEl.style.display = msg ? 'block' : 'none';
+      }
+
+      function showOverlay(){
+        document.body.classList.add('auth-locked');
+        overlay.classList.add('show');
+        overlay.setAttribute('aria-hidden','false');
+        setError('');
+        passInput.value='';
+        loginBtn.disabled = false;
+        requestAnimationFrame(()=> userSelect.focus());
+        if (logoutBtn) logoutBtn.style.display = 'none';
+      }
+
+      function hideOverlay(){
+        overlay.classList.remove('show');
+        overlay.setAttribute('aria-hidden','true');
+        document.body.classList.remove('auth-locked');
+        setError('');
+        passInput.value='';
+      }
+
+      function complete(user){
+        currentUser = user;
+        hideOverlay();
+        localStorage.setItem(AUTH_KEY, JSON.stringify({ id:user.id, name:user.name, role:user.role }));
+        if (!resolved){
+          resolved = true;
+          onReady(user);
+        }
+      }
+
+      form.addEventListener('submit', (event)=>{
+        event.preventDefault();
+        const selected = userSelect.value;
+        const password = passInput.value.trim();
+        if (!selected){ setError('Select your depot.'); userSelect.focus(); return; }
+        const record = USERS.find(u=>u.id===selected) || { id:selected, name:selected, role: selected === 'admin' ? 'admin' : 'depot' };
+        const role = record.role ?? (record.id === 'admin' ? 'admin' : 'depot');
+        const expected = (PASSWORDS[record.id] !== undefined)
+          ? PASSWORDS[record.id]
+          : (role === 'admin' ? PASSWORDS.admin : PASSWORDS.default);
+        if (password !== expected){ setError('Incorrect password.'); passInput.value=''; passInput.focus(); return; }
+        const user = { id: record.id, name: record.name ?? record.id, role };
+        complete(user);
+      });
+
+      passInput.addEventListener('input', ()=> setError(''));
+      userSelect.addEventListener('change', ()=> setError(''));
+
+      const stored = localStorage.getItem(AUTH_KEY);
+      if (stored){
+        try{
+          const parsed = JSON.parse(stored);
+          if (parsed?.id){
+            const base = USERS.find(u=>u.id===parsed.id);
+            const user = base ? { ...base } : { id: parsed.id, name: parsed.name ?? parsed.id, role: parsed.role ?? (parsed.id === 'admin' ? 'admin' : 'depot') };
+            complete(user);
+            return;
+          }
+        }catch{
+          localStorage.removeItem(AUTH_KEY);
+        }
+      }
+
+      showOverlay();
+    }
+
+    function MarkingModule(prefix){
+      const fileEl         = document.getElementById(prefix + '_file');
+      const fileMeta       = document.getElementById(prefix + '_file_meta');
+      const scheduleFileEl = document.getElementById(prefix + '_schedule_file');
+      const scheduleMeta   = document.getElementById(prefix + '_schedule_meta');
+      const scanEl         = document.getElementById(prefix + '_scan');
+      const clearEl        = document.getElementById(prefix + '_clear');
+      const exportEl       = document.getElementById(prefix + '_export');
+      const tableWrap      = document.getElementById(prefix + '_table');
+      const scheduleWrap   = document.getElementById(prefix + '_schedule_table');
+      const summaryEl      = document.getElementById(prefix + '_scanned_summary');
+      const filterClearEl  = document.getElementById(prefix + '_filter_clear');
+      const isGlueline     = currentUser?.id === 'glueline';
+      const topBar         = document.querySelector('.top-bar');
+      const gluelineLogWrap = isGlueline ? document.createElement('div') : null;
+      let gluelineLogEntries = [];
+      let gluelineLogBody = null;
+      const filtersDisabled = prefix === 'final';
+      const runFilterEl    = filtersDisabled ? null : document.getElementById(prefix + '_run_filter');
+      const canUpload      = currentUser?.role === 'admin';
+
+      const hasRunsheetUI = Boolean(fileEl && fileMeta && tableWrap);
+      const hasScheduleUI = Boolean(scheduleFileEl && scheduleMeta && scheduleWrap);
+
+      if (!scanEl || !clearEl || !exportEl) {
+        return { focus: () => {} };
+      }
+      if (!hasRunsheetUI && !hasScheduleUI) {
+        return { focus: () => {} };
+      }
+
+      const baseKey = (suffix)=>{
+        const user = currentUser?.id || 'anon';
+        return `drm_${user}_${prefix}_${suffix}`;
+      };
+      const KEYS = {
+        table:   baseKey('table_v2'),
+        gen:     baseKey('generated_v2'),
+        scanned: baseKey('scanned_v2'),
+        lookup:  baseKey('rowlookup_v2'),
+        files:   baseKey('files_meta_v2'),
+        schedule:baseKey('schedule_v1'),
+        notes:   baseKey('notes_v1'),
+      };
+
+      let tableData = [];
+      let generated = {};
+      let scanned   = {};
+      let rowLookup = {};
+      let statusEl  = null;
+      let loadedFiles = [];
+      let scheduleEntries = [];
+      let filteredSO = null;
+      let runFilter = 'all';
+      let lastScanInfo = null;
+      let autoScanTimer = null;
+      let notes = {};
+      const AUTOSCAN_DELAY = 120;
+      const MIN_BARCODE_LENGTH = 11;
+
+      const extractSO = v => {
+        const upper = String(v ?? '').toUpperCase();
+        const match = upper.match(/SO\d+/);
+        return match ? match[0] : '';
+      };
+
+      async function fetchLatestDepotManifest(depotId){
+        if (!SUPABASE_ENABLED || !depotId) return null;
+        const { data, error } = await supabase
+          .from('depot_manifests')
+          .select('payload, created_at')
+          .eq('depot_id', depotId)
+          .eq('kind', 'final')
+          .order('created_at', { ascending:false })
+          .limit(1);
+        if (error) throw error;
+        return Array.isArray(data) && data.length ? data[0] : null;
+      }
+
+      function hydrateStateFromPayload(payload){
+        if (!payload || typeof payload !== 'object') return false;
+        let hydrated = false;
+        if (Array.isArray(payload.tableData)){
+          tableData = payload.tableData;
+          hydrated = true;
+        }
+        if (Array.isArray(payload.filesMeta)) loadedFiles = payload.filesMeta;
+        if (payload.generated && typeof payload.generated === 'object') generated = payload.generated;
+        if (payload.rowLookup && typeof payload.rowLookup === 'object') rowLookup = payload.rowLookup;
+        if (Array.isArray(payload.scheduleEntries)) scheduleEntries = payload.scheduleEntries;
+        else if (Array.isArray(payload.entries)) scheduleEntries = payload.entries;
+        return hydrated;
+      }
+
+      if (filterClearEl){
+        filterClearEl.style.display = 'none';
+        if (filtersDisabled) filterClearEl.remove();
+      }
+      if (summaryEl) summaryEl.style.display = 'none';
+
+      if (gluelineLogWrap){
+        gluelineLogWrap.className = 'glueline-log';
+        gluelineLogWrap.innerHTML = '<div class="glueline-log-title">Scan Log</div><div class="glueline-log-body"><div class="glueline-log-empty">No scans yet.</div></div>';
+        gluelineLogBody = gluelineLogWrap.querySelector('.glueline-log-body');
+      }
+
+      const parentCard = scanEl.closest('.card');
+      if (isGlueline){
+        const logoutBtnEl = document.getElementById('auth_logout');
+        if (tableWrap) tableWrap.style.display = 'none';
+        if (scheduleWrap) scheduleWrap.style.display = 'none';
+        if (fileMeta) fileMeta.style.display = 'none';
+        if (scheduleMeta) scheduleMeta.style.display = 'none';
+        if (fileEl){
+          fileEl.disabled = true;
+          fileEl.style.display = 'none';
+        }
+        if (exportEl){
+          exportEl.style.display = 'none';
+          exportEl.tabIndex = -1;
+          exportEl.setAttribute('aria-hidden','true');
+        }
+        if (clearEl){
+          clearEl.style.display = 'none';
+          clearEl.setAttribute('aria-hidden','true');
+          clearEl.tabIndex = -1;
+        }
+        let topClearBtn = document.getElementById('glueline_clear_top');
+        if (!topClearBtn){
+          topClearBtn = document.createElement('button');
+          topClearBtn.type = 'button';
+          topClearBtn.id = 'glueline_clear_top';
+          topClearBtn.className = 'glueline-clear-btn';
+          topClearBtn.textContent = 'Clear Final';
+          topClearBtn.addEventListener('click', ()=>{ clearEl?.click(); });
+        }
+        if (topBar && !topClearBtn.isConnected){
+          if (logoutBtnEl){
+            topBar.insertBefore(topClearBtn, logoutBtnEl);
+          }else{
+            topBar.appendChild(topClearBtn);
+          }
+        }
+        if (parentCard){
+          parentCard.classList.add('glueline-condensed');
+          if (gluelineLogWrap && !gluelineLogWrap.isConnected){
+            parentCard.appendChild(gluelineLogWrap);
+          }
+        }
+      }else{
+        if (tableWrap) tableWrap.style.display = '';
+        if (scheduleWrap) scheduleWrap.style.display = '';
+        if (fileMeta) fileMeta.style.display = '';
+        if (scheduleMeta) scheduleMeta.style.display = '';
+        if (fileEl) fileEl.style.display = '';
+        if (exportEl){
+          exportEl.style.display = '';
+          exportEl.tabIndex = 0;
+          exportEl.removeAttribute('aria-hidden');
+        }
+        if (clearEl){
+          clearEl.style.display = '';
+          clearEl.removeAttribute('aria-hidden');
+          clearEl.tabIndex = 0;
+        }
+        const topClearBtn = document.getElementById('glueline_clear_top');
+        if (topClearBtn){
+          topClearBtn.remove();
+        }
+        if (parentCard){
+          parentCard.classList.remove('glueline-condensed');
+        }
+        if (gluelineLogWrap && gluelineLogWrap.isConnected){
+          gluelineLogWrap.remove();
+        }
+        gluelineLogEntries = [];
+        gluelineLogBody = null;
+      }
+
+      if (!canUpload){
+        if (fileEl){
+          fileEl.disabled = true;
+          fileEl.style.display = 'none';
+        }
+        if (scheduleFileEl){
+          scheduleFileEl.disabled = true;
+          scheduleFileEl.style.display = 'none';
+        }
+      }
+
+      if (runFilterEl){
+        runFilterEl.addEventListener('change', event=>{
+          const value = event.target.value || 'all';
+          runFilter = value === 'all' ? 'all' : value.trim();
+          renderTable();
+          renderScheduleTable();
+          if (hasRunsheetUI) focusScan();
+        });
+      }
+
+      function ensureStatus(){
+        if (statusEl) return statusEl;
+        statusEl = document.createElement('div');
+        statusEl.className = 'status-card';
+        const card = fileEl.closest('.card');
+        const controls = card?.querySelector('.controls');
+        if (card && controls){
+          if (isGlueline){
+            controls.appendChild(statusEl);
+          }else{
+            card.insertBefore(statusEl, controls.nextSibling);
+          }
+        }
+        return statusEl;
+      }
+
+      function setStatus({so, run, drop, scannedCount, total, statusMessage}){
+        const el = ensureStatus();
+        const isGlueline = currentUser?.id === 'glueline';
+        el.classList.toggle('status-card--glueline', !!isGlueline);
+        const routeExists = (run && run !== '-') || (drop && drop !== '-');
+        const runPart = run && run !== '-' ? String(run) : '';
+        const dropPart = drop && drop !== '-' ? String(drop) : '';
+        const combinedRoute = `${runPart}${dropPart}`;
+        const safeSO = escapeHTML(so || '-');
+        let routeHTML;
+        if (statusMessage){
+          routeHTML = `<div class="status-route status-route--missing">${escapeHTML(statusMessage)}</div>`;
+        } else if (routeExists){
+          routeHTML = `<div class="status-route">${escapeHTML(combinedRoute || '-')}</div>`;
+        } else {
+          routeHTML = `<div class="status-route status-route--missing">Not routed</div>`;
+        }
+        const progressHTML = (hasRunsheetUI && !isGlueline)
+          ? `<div class="status-meta"><span class="status-label">Progress</span><span class="status-progress">${escapeHTML(String(scannedCount ?? 0))}/${escapeHTML(String(total ?? 0))}</span></div>`
+          : '';
+        el.innerHTML = `
+          <div class="status-row">
+            <span class="status-label">Sales Order</span>
+            <span class="status-value">${safeSO}</span>
           </div>
-          <div class="report-btn" id="admin_push_final" tabindex="0">Push to Depot</div>
-          <div class="report-btn" id="admin_push_all" tabindex="0">Push to All Depots</div>
-        </div>
-        <div id="admin_preview" class="table-wrapper"><div class="table-scroll"></div></div>
-      </section>
-      <section class="card" aria-label="Submitted reports">
-        <div class="controls">
-          <div class="file-meta" id="admin_reports_meta">No reports submitted.</div>
-        </div>
-        <div id="admin_reports_table" class="table-wrapper"><div class="table-scroll"></div></div>
-      </section>
-    </section>
+          ${routeHTML}
+          ${progressHTML}
+        `;
+      }
 
-  </div>
+      const toast = showToast;
 
-  <div id="auth_overlay" class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth_title">
-    <form class="auth-card" id="auth_form">
-      <h2 id="auth_title">Depot Login</h2>
-      <label>
-        Depot
-        <select id="auth_user" required>
-          <option value="" disabled selected>Select depot</option>
-        </select>
-      </label>
-      <label>
-        Password
-        <input type="password" id="auth_pass" placeholder="Enter password" autocomplete="off" required>
-      </label>
-      <div id="auth_error" class="auth-error" role="alert"></div>
-      <button id="auth_login" type="submit">Sign In</button>
-    </form>
-  </div>
+      function updateGluelineLog(){
+        if (!gluelineLogWrap || !gluelineLogBody) return;
+        if (!gluelineLogEntries.length){
+          gluelineLogBody.innerHTML = '<div class="glueline-log-empty">No scans yet.</div>';
+          return;
+        }
+        const entriesHTML = gluelineLogEntries.map(entry=>{
+          const runText = entry.run && entry.run !== '-' ? `Run ${entry.run}` : 'Run -';
+          const dropText = entry.drop && entry.drop !== '-' ? `Drop ${entry.drop}` : 'Drop -';
+          const timeText = entry.time || '';
+          return `
+            <div class="glueline-log-entry">
+              <div class="glueline-log-row">
+                <span class="glueline-log-so">${escapeHTML(entry.so || '-')}</span>
+                <span class="glueline-log-time">${escapeHTML(timeText)}</span>
+              </div>
+              <div class="glueline-log-meta">${escapeHTML(runText)} · ${escapeHTML(dropText)}</div>
+              <div class="glueline-log-code">${escapeHTML(entry.code || '-')}</div>
+            </div>
+          `;
+        }).join('');
+        gluelineLogBody.innerHTML = entriesHTML;
+      }
 
-  <!-- SheetJS for Excel parsing -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="config.js"></script>
-  <script src="script.js" defer></script>
-</body>
-</html>
+      function recordGluelineScan({ code, so, run, drop, time }){
+        if (!isGlueline || !gluelineLogWrap) return;
+        gluelineLogEntries.unshift({
+          code,
+          so,
+          run: run || '-',
+          drop: drop || '-',
+          time: time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        if (gluelineLogEntries.length > 200){
+          gluelineLogEntries.length = 200;
+        }
+        updateGluelineLog();
+      }
+
+      function rebuildGluelineLogFromStoredScans(){
+        if (!isGlueline || !gluelineLogWrap || !scanned) return;
+        const rebuilt = [];
+        Object.entries(scanned).forEach(([so, set])=>{
+          if (!set || typeof set.forEach !== 'function') return;
+          const { run, drop } = firstRunDrop(so);
+          Array.from(set).forEach(code=>{
+            rebuilt.push({
+              code,
+              so,
+              run: run || '-',
+              drop: drop || '-',
+              time: '—'
+            });
+          });
+        });
+        if (!rebuilt.length) return;
+        rebuilt.sort((a, b)=>{
+          const soCompare = String(a.so).localeCompare(String(b.so), undefined, { sensitivity:'base', numeric:true });
+          if (soCompare !== 0) return soCompare;
+          return String(a.code).localeCompare(String(b.code), undefined, { sensitivity:'base', numeric:true });
+        });
+        gluelineLogEntries = rebuilt;
+        updateGluelineLog();
+      }
+
+      function updateFileMeta(){
+        if (!fileMeta) return;
+        if (!loadedFiles.length) {
+          fileMeta.textContent = canUpload ? 'No runsheet loaded.' : 'Awaiting admin upload.';
+          return;
+        }
+        const totalRows = loadedFiles.reduce((sum,file)=>sum+file.rows,0);
+        fileMeta.textContent = `${loadedFiles.length} file(s) merged - ${totalRows.toLocaleString()} rows`;
+      }
+
+      function updateScheduleMeta(){
+        if (!scheduleMeta) return;
+        if (!scheduleEntries.length) {
+          scheduleMeta.textContent = canUpload ? 'No production schedule loaded.' : 'Awaiting admin upload.';
+          return;
+        }
+        const matched = scheduleEntries.reduce((sum, entry)=> sum + (rowLookup[entry.so]?.length ? 1 : 0), 0);
+        let text = `${scheduleEntries.length} production order(s) loaded - ${matched} matched to runsheet.`;
+        if (filteredSO){
+          const visible = scheduleEntries.filter(entry => entry.so === filteredSO).length;
+          text += ` Showing ${visible} for ${filteredSO}.`;
+        }
+        scheduleMeta.textContent = text;
+      }
+
+      function updateScanAvailability(){
+        if (!scanEl) return;
+        const hasGenerated = Object.values(generated).some(arr => Array.isArray(arr) && arr.length > 0);
+        const shouldEnable = hasGenerated;
+        const wasDisabled = scanEl.disabled;
+        scanEl.disabled = !shouldEnable;
+        if (shouldEnable && wasDisabled) focusScan();
+      }
+
+      function updateFilterUI(){
+        if (!filterClearEl || filtersDisabled) return;
+        filterClearEl.style.display = filteredSO ? '' : 'none';
+      }
+
+      function updateSummaryDisplay(){
+        if (!summaryEl) return;
+        if (!lastScanInfo || (hasScheduleUI && !scheduleEntries.length)){
+          summaryEl.style.display = 'none';
+          summaryEl.innerHTML = '';
+          return;
+        }
+        const { so, run, drop } = lastScanInfo;
+        const runText = run && run !== '-' ? run : '-';
+        const dropText = drop && drop !== '-' ? drop : '-';
+        const hasRoute = runText !== '-' || dropText !== '-';
+        const routeText = hasRoute ? `Run ${runText} / Drop ${dropText}` : 'Not routed';
+        summaryEl.style.display = '';
+        summaryEl.innerHTML = `
+          <strong>Scanned:</strong> <span>${so}</span>&nbsp;&middot;&nbsp;
+          <strong>Route:</strong> <span>${routeText}</span>
+        `;
+      }
+
+      function recalcManifest(){
+        const manifest = computeManifestData(tableData);
+        generated = manifest.generated;
+        rowLookup = manifest.rowLookup;
+      }
+
+      function applyScheduleFilter(so){
+        if (!hasScheduleUI) return;
+        filteredSO = filtersDisabled ? null : so;
+        renderScheduleTable();
+        updateScheduleMeta();
+        updateScanAvailability();
+        updateSummaryDisplay();
+      }
+
+      function clearScheduleFilter(){
+        if (!hasScheduleUI) return;
+        filteredSO = null;
+        renderScheduleTable();
+        updateScheduleMeta();
+        updateScanAvailability();
+        focusScan();
+        updateSummaryDisplay();
+      }
+
+      function save(){
+        try{
+          const plainScanned = {};
+          Object.entries(scanned).forEach(([k,v])=>plainScanned[k]=Array.from(v));
+          localStorage.setItem(KEYS.scanned, JSON.stringify(plainScanned));
+          localStorage.setItem(KEYS.notes, JSON.stringify(notes));
+          if (hasRunsheetUI){
+            localStorage.setItem(KEYS.table, JSON.stringify(tableData));
+            localStorage.setItem(KEYS.gen, JSON.stringify(generated));
+            localStorage.setItem(KEYS.lookup, JSON.stringify(rowLookup));
+            localStorage.setItem(KEYS.files, JSON.stringify(loadedFiles));
+            if (typeof window !== 'undefined'){
+              window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix } }));
+            }
+          }
+          if (hasScheduleUI){
+            localStorage.setItem(KEYS.schedule, JSON.stringify(scheduleEntries));
+          }
+        }catch{}
+      }
+
+      function load(){
+        try{
+          const storedScanned = localStorage.getItem(KEYS.scanned);
+          scanned = {};
+          if (storedScanned){
+            const plain = JSON.parse(storedScanned) || {};
+            Object.entries(plain).forEach(([k,arr])=>scanned[k]=new Set(arr||[]));
+          }
+          const notesRaw = localStorage.getItem(KEYS.notes);
+          notes = notesRaw ? (JSON.parse(notesRaw) || {}) : {};
+
+          if (hasRunsheetUI){
+            const t = localStorage.getItem(KEYS.table);
+            const g = localStorage.getItem(KEYS.gen);
+            const l = localStorage.getItem(KEYS.lookup);
+            const f = localStorage.getItem(KEYS.files);
+            if (t){
+              tableData = JSON.parse(t) || [];
+              generated = g ? JSON.parse(g) || {} : {};
+              rowLookup = l ? JSON.parse(l) || {} : {};
+              loadedFiles = f ? JSON.parse(f) : [];
+              tableData = sanitizeTableData(tableData);
+              pruneNotes();
+              if ((!g || !l) && tableData.length){
+                const manifest = computeManifestData(tableData);
+                generated = manifest.generated;
+                rowLookup = manifest.rowLookup;
+              }
+              if (tableData.length && tableWrap){
+                renderTable();
+                Object.keys(rowLookup).forEach(updateRowHighlight);
+              } else if (tableWrap){
+                tableWrap.innerHTML = '<div class="table-scroll"></div>';
+                scanEl.disabled = true;
+              }
+            } else {
+              tableData = []; generated = {}; rowLookup = {}; loadedFiles = [];
+              if (tableWrap) tableWrap.innerHTML = '<div class="table-scroll"></div>';
+              scanEl.disabled = true;
+            }
+          } else {
+            tableData = []; generated = {}; rowLookup = {}; loadedFiles = [];
+            scanEl.disabled = true;
+          }
+
+          if (hasScheduleUI){
+            const sched=localStorage.getItem(KEYS.schedule);
+            scheduleEntries = sched ? JSON.parse(sched) : [];
+          }else{
+            scheduleEntries = [];
+          }
+
+          updateFileMeta();
+          refreshSchedule({ fetchRemote: SUPABASE_ENABLED && !hasRunsheetUI });
+          updateScanAvailability();
+        }catch{
+          tableData=[]; generated={}; rowLookup={}; loadedFiles=[];
+          if (hasRunsheetUI && tableWrap) tableWrap.innerHTML='<div class="table-scroll"></div>';
+          scanEl.disabled = true;
+          if (hasScheduleUI) scheduleEntries = [];
+          scanned = {};
+          updateFileMeta();
+          refreshSchedule({ fetchRemote: SUPABASE_ENABLED && !hasRunsheetUI });
+          updateScanAvailability();
+        }
+      }
+
+      function reset(clear=false){
+        tableData=[]; generated={}; scanned={}; rowLookup={}; loadedFiles=[]; notes={};
+        runFilter = 'all';
+        if (hasScheduleUI) scheduleEntries=[];
+        filteredSO = null;
+        lastScanInfo = null;
+        if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
+        if (hasRunsheetUI && tableWrap) tableWrap.innerHTML='<div class="table-scroll"></div>';
+        if (hasScheduleUI && scheduleWrap) scheduleWrap.innerHTML='<div class="table-scroll"></div>';
+        scanEl.disabled = true;
+        updateFilterUI();
+        updateSummaryDisplay();
+      if(clear){
+        if (hasRunsheetUI){
+          localStorage.removeItem(KEYS.table);
+          localStorage.removeItem(KEYS.gen);
+          localStorage.removeItem(KEYS.lookup);
+            localStorage.removeItem(KEYS.files);
+          }
+          if (hasScheduleUI){
+            localStorage.removeItem(KEYS.schedule);
+          }
+          localStorage.removeItem(KEYS.scanned);
+          localStorage.removeItem(KEYS.notes);
+        }
+        updateFileMeta();
+        const shouldFetch = clear && SUPABASE_ENABLED;
+        if (hasScheduleUI){
+          refreshSchedule({ fetchRemote: shouldFetch, preserveLocal: !clear });
+        } else {
+          loadInitialData({ fetchRemote: shouldFetch, preserveLocal: !clear }).catch(err => console.error(err));
+        }
+        updateScanAvailability();
+        if (isGlueline){
+          gluelineLogEntries = [];
+          updateGluelineLog();
+        }
+        if (runFilterEl){
+          runFilterEl.value = 'all';
+          runFilterEl.disabled = true;
+        }
+      }
+
+      function renderTable(){
+        if (!hasRunsheetUI || !tableWrap) return;
+        pruneNotes();
+        const headers = MANIFEST_HEADERS;
+        const normalizedFilter = runFilter.trim().toUpperCase();
+        let html = '<div class="table-scroll"><table><thead><tr>';
+        headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
+        html += '<th>Notes</th></tr></thead><tbody>';
+        tableData.slice(1).forEach((row, idx)=>{
+          if (runFilter !== 'all'){
+            const runValue = String(row?.[0] ?? '').trim().toUpperCase();
+            if (runValue !== normalizedFilter) return;
+          }
+          html += `<tr id="${prefix}-row-${idx}" data-row-index="${idx}">`;
+          const cells = manifestRowToCells(row);
+          cells.forEach(cell=> html += `<td>${escapeHTML(cell)}</td>`);
+          html += `<td class="notes-cell">${buildNotesCellContent(idx, hasRunsheetUI)}</td>`;
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        tableWrap.innerHTML = html;
+        updateRunFilterOptions();
+      }
+
+      if (hasRunsheetUI && tableWrap && !tableWrap.dataset.notesBound){
+        tableWrap.addEventListener('click', handleTableClick);
+        tableWrap.dataset.notesBound = 'true';
+      }
+
+      function renderScheduleTable(){
+        if (!hasScheduleUI || !scheduleWrap) return;
+        pruneNotes();
+        if (!hasRunsheetUI) updateRunFilterOptions();
+        const headers = MANIFEST_HEADERS;
+        const entries = filteredSO ? scheduleEntries.filter(entry => entry.so === filteredSO) : scheduleEntries;
+        if (!entries.length){
+          const message = filteredSO
+            ? `No production orders found for ${filteredSO}.`
+            : '';
+          const body = message ? `<div style="padding:1rem;text-align:center;">${message}</div>` : '';
+          scheduleWrap.innerHTML = `<div class="table-scroll">${body}</div>`;
+          updateFilterUI();
+          return;
+        }
+        let html = '<div class="table-scroll"><table><thead><tr>';
+        headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
+        html += '<th>Notes</th></tr></thead><tbody>';
+        const normalizedFilter = runFilter.trim().toUpperCase();
+        entries.forEach(entry=>{
+          const idxs = rowLookup[entry.so] || [];
+          const route = firstRunDrop(entry.so);
+          const runText = route.run && route.run !== '-' ? route.run : '-';
+          const dropText = route.drop && route.drop !== '-' ? route.drop : '-';
+          if (idxs.length){
+            idxs.forEach(idx=>{
+              const row = tableData[idx+1] || [];
+              if (runFilter !== 'all' && String(row?.[0] ?? '').trim().toUpperCase() !== normalizedFilter) return;
+              const cells = manifestRowToCells(row);
+              const noteCell = buildNotesCellContent(idx, false);
+              html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + `<td class="notes-cell">${noteCell}</td></tr>`;
+            });
+          }else{
+            if (runFilter !== 'all' && String(runText ?? '').trim().toUpperCase() !== normalizedFilter) return;
+            const cells = new Array(headers.length).fill('-');
+            cells[0] = runText;
+            cells[1] = dropText;
+            cells[4] = entry.createdFrom || '-';
+            cells[5] = entry.so || '-';
+            html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + '<td class="notes-cell"><span class="note-placeholder">-</span></td></tr>';
+          }
+        });
+        html += '</tbody></table></div>';
+        scheduleWrap.innerHTML = html;
+        updateFilterUI();
+      }
+
+      function loadFromLocalStorage(){
+        try{
+          const t = localStorage.getItem(KEYS.table);
+          const g = localStorage.getItem(KEYS.gen);
+          const l = localStorage.getItem(KEYS.lookup);
+          const f = localStorage.getItem(KEYS.files);
+          const sched = localStorage.getItem(KEYS.schedule);
+          const scannedRaw = localStorage.getItem(KEYS.scanned);
+          const notesRaw = localStorage.getItem(KEYS.notes);
+          if (t) tableData = JSON.parse(t) || tableData;
+          if (g) generated = JSON.parse(g) || generated;
+          if (l) rowLookup = JSON.parse(l) || rowLookup;
+          if (f) loadedFiles = JSON.parse(f) || loadedFiles;
+          if (sched){
+            const parsed = JSON.parse(sched);
+            if (Array.isArray(parsed)) scheduleEntries = parsed;
+          }
+          if (scannedRaw){
+            const plain = JSON.parse(scannedRaw) || {};
+            scanned = {};
+            Object.entries(plain).forEach(([key, arr])=>{
+              scanned[key] = new Set(arr || []);
+            });
+          }
+          notes = notesRaw ? (JSON.parse(notesRaw) || {}) : {};
+        }catch{
+          // ignore malformed localStorage values
+        }
+        tableData = sanitizeTableData(tableData);
+        pruneNotes();
+      }
+
+      async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false, preserveLocal = true } = {}){
+        const depotId = currentUser?.id || 'unknown';
+        tableData = [];
+        generated = {};
+        rowLookup = {};
+        loadedFiles = [];
+        scheduleEntries = [];
+        filteredSO = null;
+        lastScanInfo = null;
+        scanned = {};
+        notes = {};
+
+        // fallback local data first
+        loadFromLocalStorage();
+        if (!hasRunsheetUI){
+          try{
+            const finalKey = suffix => `drm_${currentUser?.id || 'anon'}_final_${suffix}`;
+            const finalNotesRaw = localStorage.getItem(finalKey('notes_v1'));
+            if (finalNotesRaw) notes = JSON.parse(finalNotesRaw) || notes;
+          }catch{}
+        }
+
+        const hasLocalManifest = preserveLocal && (
+          tableData.length > 1 ||
+          Object.values(scanned || {}).some(set => set && typeof set.size === 'number' && set.size > 0)
+        );
+
+        if (fetchRemote && SUPABASE_ENABLED){
+          try{
+            const remote = await fetchLatestDepotManifest(depotId);
+            if (remote?.payload && !hasLocalManifest){
+              hydrateStateFromPayload(remote.payload);
+            } else if (!remote && !tableData.length && !isInitial){
+              showToast('No shared manifest available yet.', 'info');
+            }
+          }catch(err){
+            console.error('Supabase fetch error', err);
+            if (!isInitial){
+              showToast('Unable to fetch latest data from server. Using local copy.', 'error');
+            }
+          }
+        }
+
+        tableData = sanitizeTableData(tableData);
+        pruneNotes();
+
+        if (tableData.length){
+          const manifest = computeManifestData(tableData);
+          generated = manifest.generated;
+          rowLookup = manifest.rowLookup;
+        }else{
+          generated = {};
+          rowLookup = {};
+        }
+
+        if (isGlueline && gluelineLogEntries.length === 0){
+          rebuildGluelineLogFromStoredScans();
+        }
+
+        if (!hasRunsheetUI){
+          try{
+            localStorage.setItem(KEYS.table, JSON.stringify(tableData));
+            localStorage.setItem(KEYS.gen, JSON.stringify(generated));
+            localStorage.setItem(KEYS.lookup, JSON.stringify(rowLookup));
+            localStorage.setItem(KEYS.files, JSON.stringify(loadedFiles));
+            localStorage.setItem(KEYS.schedule, JSON.stringify(scheduleEntries));
+          }catch{
+            // ignore storage failures
+          }
+        }
+
+        scanEl.disabled = (prefix === 'final') && tableData.length === 0;
+
+        updateFileMeta();
+        updateScheduleMeta();
+        renderTable();
+        if (hasRunsheetUI){
+          Object.keys(scanned).forEach(updateRowHighlight);
+        }
+        renderScheduleTable();
+        updateScanAvailability();
+        updateSummaryDisplay();
+      }
+
+      function refreshSchedule(options = {}){
+        if (!hasScheduleUI) return;
+        const { fetchRemote = false, isInitial = false, preserveLocal = true } = options || {};
+        loadInitialData({ fetchRemote, isInitial, preserveLocal }).catch(err => console.error(err));
+      }
+
+      function updateRowHighlight(so){
+        if (!hasRunsheetUI) return;
+        const idxs=rowLookup[so];
+        if(!idxs) return;
+        const tot = generated[so]?.length ?? 0;
+        const scn = scanned[so]?.size ?? 0;
+        idxs.forEach(i=>{
+          const tr = document.getElementById(`${prefix}-row-${i}`);
+          if(!tr) return;
+          tr.classList.remove('partial','completed');
+          if(tot>0 && scn>=tot) tr.classList.add('completed');
+          else if(scn>0) tr.classList.add('partial');
+        });
+      }
+
+      function firstRunDrop(so){
+        const idxs=rowLookup[so];
+        if(!idxs?.length) return {run:'-',drop:'-'};
+        const row = tableData[idxs[0]+1] || [];
+        return { run: String(row[0] ?? '-'), drop: String(row[1] ?? '-') };
+      }
+
+      function focusScan(){
+        if(!scanEl.disabled) requestAnimationFrame(()=>scanEl.focus());
+      }
+
+      function shakeInput(){
+        scanEl.style.transition='transform 0.08s ease';
+        scanEl.style.transform='translateX(0)';
+        let i=0;
+        const t=setInterval(()=>{
+          scanEl.style.transform=`translateX(${i%2===0?'-6px':'6px'})`;
+          if(++i>6){clearInterval(t); scanEl.style.transform='translateX(0)';}
+        },50);
+      }
+
+      function resetScanInput(){
+        if (autoScanTimer){
+          clearTimeout(autoScanTimer);
+          autoScanTimer = null;
+        }
+        if (scanEl) scanEl.value = '';
+      }
+
+      function getRowKey(idx){
+        return String(idx);
+      }
+
+      function pruneNotes(){
+        const maxIdx = Math.max(0, tableData.length - 1);
+        Object.keys(notes).forEach(key=>{
+          const idx = Number(key);
+          if (!Number.isFinite(idx) || idx < 0 || idx >= maxIdx){
+            delete notes[key];
+          }
+        });
+      }
+
+      function updateRunFilterOptions(){
+        if (!runFilterEl) return;
+        const runsMap = new Map();
+        tableData.slice(1).forEach(row=>{
+          const raw = row?.[0];
+          if (raw == null) return;
+          const display = String(raw).trim();
+          if (!display) return;
+          const upper = display.toUpperCase();
+          if (!runsMap.has(upper)) runsMap.set(upper, display);
+        });
+
+        const previous = runFilter;
+        runFilterEl.innerHTML = '';
+        const allOption = document.createElement('option');
+        allOption.value = 'all';
+        allOption.textContent = 'All runs';
+        runFilterEl.appendChild(allOption);
+
+        if (runsMap.size){
+          const sorted = Array.from(runsMap.values()).sort((a,b)=> a.localeCompare(b, undefined, { numeric:true, sensitivity:'base' }));
+          sorted.forEach(runValue=>{
+            const option = document.createElement('option');
+            option.value = runValue;
+            option.textContent = `Run ${runValue}`;
+            runFilterEl.appendChild(option);
+          });
+          const upperPrev = (previous || '').trim().toUpperCase();
+          if (upperPrev !== 'ALL' && !runsMap.has(upperPrev)){
+            runFilter = 'all';
+          }
+          runFilterEl.disabled = false;
+        } else {
+          runFilter = 'all';
+          runFilterEl.disabled = true;
+        }
+
+        runFilterEl.value = runFilter;
+      }
+
+      function buildNotesCellContent(idx, includeActions){
+        const key = getRowKey(idx);
+        const noteText = notes[key] || '';
+        const hasNote = noteText.trim() !== '';
+        const display = hasNote
+          ? `<span class="note-text">${escapeHTML(noteText)}</span>`
+          : '<span class="note-placeholder">No note</span>';
+        let html = `<div class="note-display">${display}</div>`;
+        if (includeActions){
+          const btnLabel = hasNote ? 'Edit Note' : 'Add Note';
+          html += '<div class="note-actions">';
+          html += `<button type="button" class="note-btn" data-row="${idx}">${btnLabel}</button>`;
+          html += `<button type="button" class="manual-btn" data-row="${idx}">Manual Mark</button>`;
+          html += '</div>';
+        }
+        return html;
+      }
+
+      function updateRowNoteCell(idx){
+        const tr = document.getElementById(`${prefix}-row-${idx}`);
+        if (!tr) return;
+        const cell = tr.querySelector('.notes-cell');
+        if (!cell) return;
+        cell.innerHTML = buildNotesCellContent(idx, hasRunsheetUI);
+      }
+
+      function editNoteForRow(idx){
+        const key = getRowKey(idx);
+        const existing = notes[key] || '';
+        const input = prompt('Enter note for this consignment:', existing);
+        if (input === null) return;
+        const value = input.trim();
+        if (value){
+          notes[key] = value;
+        }else{
+          delete notes[key];
+        }
+        updateRowNoteCell(idx);
+        renderScheduleTable();
+        save();
+      }
+
+      function manualMarkRow(idx){
+        if (!hasRunsheetUI) return;
+        const row = tableData[idx + 1];
+        if (!row){
+          toast('Unable to locate this consignment row.', 'error');
+          return;
+        }
+        const so = normSO(row[COL_SO]);
+        if (!so){
+          toast('This row does not contain a sales order.', 'error');
+          return;
+        }
+        const expected = generated[so];
+        if (!expected?.length){
+          toast('No consignments are pending for this sales order.', 'error');
+          return;
+        }
+        if (!scanned[so]) scanned[so] = new Set();
+        const nextCode = expected.find(code => !scanned[so].has(code));
+        if (!nextCode){
+          toast('All consignments already marked for this sales order.', 'info');
+          return;
+        }
+        scanned[so].add(nextCode);
+        const scannedCount = scanned[so].size;
+        const total = expected.length;
+        const { run, drop } = firstRunDrop(so);
+        setStatus({ so, run, drop, scannedCount, total });
+        updateRowHighlight(so);
+        lastScanInfo = { so, run, drop };
+        updateSummaryDisplay();
+        recordGluelineScan({ code: nextCode, so, run, drop });
+        save();
+        focusScan();
+        toast('Consignment marked manually.', 'success');
+      }
+
+      function handleTableClick(event){
+        const noteBtn = event.target.closest('.note-btn');
+        if (noteBtn){
+          const idx = Number(noteBtn.dataset.row);
+          if (Number.isFinite(idx)) editNoteForRow(idx);
+          return;
+        }
+        const manualBtn = event.target.closest('.manual-btn');
+        if (manualBtn){
+          const idx = Number(manualBtn.dataset.row);
+          if (Number.isFinite(idx)) manualMarkRow(idx);
+        }
+      }
+
+      async function handleFiles(fileList){
+        if (!canUpload || !hasRunsheetUI) return;
+        if(!fileList || !fileList.length) return;
+        if (!(await ensureXLSX())){
+          toast('Excel parser not available. Check your connection and try again.', 'error');
+          if (fileEl) fileEl.value='';
+          return;
+        }
+        try{
+          tableData = sanitizeTableData(tableData);
+          const previousRows = Math.max(0, tableData.length - 1);
+          const files = Array.from(fileList);
+          const results = await Promise.all(files.map(f => readWorkbookFile(f).then(rows => ({ name:f.name, rows }))));
+          if (!results.length || !results[0].rows?.length){
+            toast('The selected workbook appears to be empty.', 'error');
+            return;
+          }
+
+          let base = tableData.length ? tableData[0] : results[0].rows[0] || [];
+          let merged = [ base ];
+          let newFilesMeta = [];
+
+          if (tableData.length > 1) {
+            merged = merged.concat(tableData.slice(1));
+          }
+
+          results.forEach(r => {
+            const cleanedBody = ((r.rows || []).slice(1) || []).filter(rowHasMeaningfulData);
+            if (cleanedBody.length) {
+              merged = merged.concat(cleanedBody);
+              newFilesMeta.push({ name: r.name, rows: cleanedBody.length });
+            }
+          });
+
+          merged = sanitizeTableData(merged);
+          tableData = merged;
+          pruneNotes();
+          loadedFiles = (loadedFiles || []).concat(newFilesMeta);
+          filteredSO = null;
+          lastScanInfo = null;
+          updateSummaryDisplay();
+          updateFilterUI();
+
+          recalcManifest();
+          renderTable();
+          scanEl.value = '';
+          Object.keys(rowLookup).forEach(updateRowHighlight);
+          refreshSchedule({ fetchRemote: false });
+          updateFileMeta();
+          updateScanAvailability();
+          save();
+          focusScan();
+          const totalRows = Math.max(0, tableData.length - 1);
+          const addedRows = Math.max(0, totalRows - previousRows);
+          toast(`Merged ${newFilesMeta.length} file(s), ${addedRows.toLocaleString()} new row(s).`, 'success');
+        }catch(err){
+          console.error(err);
+          toast('Unable to read the selected workbook. Please verify the file format.', 'error');
+        }finally{
+          fileEl.value = '';
+        }
+      }
+
+      async function handleSchedule(fileList){
+        if (!canUpload || !hasScheduleUI) return;
+        if(!fileList || !fileList.length) return;
+        if (!(await ensureXLSX())){
+          toast('Excel parser not available. Check your connection and try again.', 'error');
+          if (scheduleFileEl) scheduleFileEl.value='';
+          return;
+        }
+        try{
+          const file = fileList[0];
+          const rows = await readWorkbookFile(file);
+          if(!rows.length){
+            toast('The production schedule appears to be empty.', 'error');
+            scheduleEntries = [];
+            refreshSchedule({ fetchRemote: false });
+            save();
+            return;
+          }
+          const headers = (rows[0] || []).map(v => String(v ?? '').trim().toLowerCase());
+          const createdIdx = headers.findIndex(h => h === 'created from');
+          if (createdIdx === -1){
+            toast('Could not find a "Created From" column in the production schedule.', 'error');
+            return;
+          }
+          const seen = new Set();
+          const entries = [];
+          rows.slice(1).forEach(row=>{
+            const raw = row[createdIdx];
+            if (raw == null || raw === '') return;
+            const so = extractSO(raw);
+            if (!so || seen.has(so)) return;
+            seen.add(so);
+            entries.push({ createdFrom: String(raw), so });
+          });
+          if (!entries.length){
+            toast('No sales orders found in the production schedule.', 'error');
+            filteredSO = null;
+            scheduleEntries = [];
+            refreshSchedule({ fetchRemote: false });
+            save();
+            return;
+          }
+          filteredSO = null;
+          scheduleEntries = entries;
+          lastScanInfo = null;
+          updateSummaryDisplay();
+          updateFilterUI();
+          refreshSchedule({ fetchRemote: false });
+          updateScanAvailability();
+          save();
+          toast(`Loaded ${entries.length} production order(s).`,'success');
+        }catch(err){
+          console.error(err);
+          toast('Unable to read the production schedule.', 'error');
+        }finally{
+          scheduleFileEl.value = '';
+        }
+      }
+
+      function handleScan(raw){
+        const s = raw ? String(raw).trim() : '';
+        if(!s){
+          resetScanInput();
+          return false;
+        }
+        if (s.length < MIN_BARCODE_LENGTH){
+          toast(`Barcode must be ${MIN_BARCODE_LENGTH} characters.`, 'error');
+          shakeInput();
+          resetScanInput();
+          return false;
+        }
+        const code = s.toUpperCase();
+        const so = code.slice(0,-3);
+        const known = generated[so];
+        if(!known || !known.includes(code)){
+          toast('Sales Order not found or barcode invalid.','error');
+          setStatus({
+            so: so || code,
+            run: '-',
+            drop: '-',
+            scannedCount: 0,
+            total: 0,
+            statusMessage: 'Consignment not found'
+          });
+          lastScanInfo = null;
+          updateSummaryDisplay();
+          shakeInput();
+          resetScanInput();
+          return false;
+        }
+        if(!scanned[so]) scanned[so]=new Set();
+        const preventDuplicates = hasRunsheetUI;
+        if (preventDuplicates && scanned[so].has(code)){
+          const scannedCount = scanned[so].size;
+          const total = known.length;
+          const {run, drop} = firstRunDrop(so);
+          setStatus({ so, run, drop, scannedCount, total });
+          if (hasScheduleUI && !hasRunsheetUI) applyScheduleFilter(so);
+          lastScanInfo = { so, run, drop };
+          updateSummaryDisplay();
+          toast('This barcode has already been scanned.','info');
+          resetScanInput();
+          focusScan();
+          return false;
+        }
+        scanned[so].add(code);
+        const scannedCount = scanned[so].size;
+        const total = known.length;
+        const {run, drop} = firstRunDrop(so);
+        setStatus({so, run, drop, scannedCount, total});
+        if (hasScheduleUI && !hasRunsheetUI) applyScheduleFilter(so);
+        updateRowHighlight(so);
+        lastScanInfo = { so, run, drop };
+        updateSummaryDisplay();
+        recordGluelineScan({ code, so, run, drop });
+        if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
+        save();
+        focusScan();
+        const statusText = hasRunsheetUI
+          ? `Marked 1 / ${total} for ${so}`
+          : `Run ${run || '-'} / Drop ${drop || '-'} for ${so}`;
+        toast(statusText,'success');
+        resetScanInput();
+        return true;
+      }
+
+      scanEl.addEventListener('keydown', (e)=>{
+        if(e.key==='Enter'){
+          handleScan(e.target.value);
+        }
+      });
+
+      scanEl.addEventListener('input', ()=>{
+        if (scanEl.disabled) return;
+        const value = scanEl.value ? scanEl.value.trim() : '';
+        if (!value){
+          if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
+          return;
+        }
+        if (value.length < MIN_BARCODE_LENGTH) return;
+        if (autoScanTimer) clearTimeout(autoScanTimer);
+        autoScanTimer = setTimeout(()=>{
+          autoScanTimer = null;
+          handleScan(value);
+        }, AUTOSCAN_DELAY);
+      });
+
+      if (canUpload && fileEl) fileEl.addEventListener('change', (e)=>{ handleFiles(e.target.files); });
+      if (canUpload && scheduleFileEl) scheduleFileEl.addEventListener('change', (e)=>{ handleSchedule(e.target.files); });
+      if (!filtersDisabled && filterClearEl){
+        filterClearEl.addEventListener('click', ()=>{ clearScheduleFilter(); });
+        filterClearEl.addEventListener('keydown', (event)=>{
+          if (event.key === 'Enter' || event.key === ' '){
+            event.preventDefault();
+            clearScheduleFilter();
+          }
+        });
+      }
+
+      clearEl.addEventListener('click', ()=>{
+        const promptMsg = 'This will remove all loaded runsheets, scans, and notes for Final Marking. Are you sure?';
+        if(!confirm(promptMsg)) return;
+        reset(true);
+        scanEl.value='';
+        if (hasRunsheetUI && fileEl) fileEl.value='';
+        if (hasScheduleUI && scheduleFileEl) scheduleFileEl.value='';
+        toast('Cleared.','success');
+      });
+
+      if (hasScheduleUI && !hasRunsheetUI && typeof window !== 'undefined'){
+        window.addEventListener('drm:runsheet-updated', event=>{
+          const prefixDetail = event?.detail?.prefix;
+          const shouldFetch = SUPABASE_ENABLED && prefixDetail === 'admin';
+          refreshSchedule({ fetchRemote: shouldFetch });
+        });
+      }
+
+      exportEl.addEventListener('click', async ()=>{
+        if(!tableData.length){
+          toast('Nothing to report yet.', 'error');
+          return;
+        }
+        if (tableData.length <= 1){
+          toast('No manifest entries yet.', 'info');
+          return;
+        }
+        const esc = v => {
+          const s = (v??'')==='' ? '-' : String(v);
+          return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+        };
+
+        const headers = [...MANIFEST_HEADERS, 'Notes', 'Status'];
+        const statusBySo = {};
+        Object.keys(generated).forEach(so=>{
+          const expected = generated[so]?.length ?? 0;
+          const counted = scanned[so]?.size ?? 0;
+          statusBySo[so] = expected > 0 && counted >= expected ? 'Complete' : 'Not Complete';
+        });
+        const dataRows = tableData.slice(1).map((row, idx)=>{
+          const cells = manifestRowToCells(row);
+          const so = normSO(row[COL_SO]);
+          const note = notes[getRowKey(idx)] || '';
+          cells.push(note || '-');
+          cells.push(statusBySo[so] || 'Not Complete');
+          return cells;
+        });
+
+        let csv = headers.join(',') + '\n';
+        dataRows.forEach(cells => { csv += cells.slice(0, headers.length).map(esc).join(',') + '\n'; });
+
+        const report = {
+          id: generateClientUuid(),
+          depotId: currentUser?.id || 'unknown',
+          depotName: currentUser?.name || 'Unknown Depot',
+          kind: 'final',
+          created: new Date().toISOString(),
+          rows: dataRows.length,
+          filename: `final_${currentUser?.id || 'unknown'}_${Date.now()}.csv`,
+          csv: encodeCSV(csv)
+        };
+        try{
+          await addReport(report);
+          toast('Report sent to admin.', 'success');
+        }catch(err){
+          console.error('Failed to send report', err);
+          const message = err?.message || err?.error_description || 'Failed to send report.';
+          toast(message, 'error');
+        }
+      });
+
+      loadInitialData({ fetchRemote: SUPABASE_ENABLED, isInitial: true }).catch(err => console.error(err));
+
+      return { focus: () => { if(!scanEl.disabled) scanEl.focus(); } };
+    }
+
+    function AdminModule(){
+      const uploadEl = document.getElementById('admin_upload');
+      const metaEl   = document.getElementById('admin_meta');
+      const pushFinalEl = document.getElementById('admin_push_final');
+      const pushAllEl   = document.getElementById('admin_push_all');
+      const previewWrap = document.getElementById('admin_preview');
+      const targetsWrap = document.getElementById('admin_targets');
+      const reportsMeta = document.getElementById('admin_reports_meta');
+      const reportsTable= document.getElementById('admin_reports_table');
+      if (!uploadEl || !metaEl || !pushFinalEl || !pushAllEl || !previewWrap || !targetsWrap || !reportsMeta || !reportsTable){
+        return { focus: () => {} };
+      }
+
+      let tableData = [];
+      let fileName = '';
+      let reportsCache = [];
+      let reportsLoading = false;
+
+      function renderPreview(){
+        if (!tableData.length){
+          previewWrap.innerHTML = '<div class="table-scroll"></div>';
+          return;
+        }
+        let html = '<div class="table-scroll"><table><thead><tr>';
+        MANIFEST_HEADERS.forEach(h => html += `<th>${h}</th>`);
+        html += '</tr></thead><tbody>';
+        tableData.slice(1).forEach(row => {
+          const cells = manifestRowToCells(row);
+          html += '<tr>' + cells.map(cell => `<td>${cell}</td>`).join('') + '</tr>';
+        });
+        html += '</tbody></table></div>';
+        previewWrap.innerHTML = html;
+      }
+
+      function renderTargets(){
+        targetsWrap.innerHTML = '';
+        const select = document.createElement('select');
+        select.id = 'admin_target_select';
+        select.className = 'run-filter';
+        const depots = USERS.filter(u => u.role === 'depot');
+        depots.forEach(user=>{
+          const option = document.createElement('option');
+          option.value = user.id;
+          option.textContent = user.name;
+          select.appendChild(option);
+        });
+        if (depots.length){
+          select.selectedIndex = 0;
+          select.disabled = false;
+        }else{
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.textContent = 'No depots available';
+          placeholder.selected = true;
+          select.appendChild(placeholder);
+          select.disabled = true;
+        }
+        targetsWrap.appendChild(select);
+      }
+
+      function selectedDepotIds(){
+        const select = targetsWrap.querySelector('select');
+        if (!select) return [];
+        return select.value ? [select.value] : [];
+      }
+
+      async function renderReports(){
+        reportsLoading = true;
+        reportsMeta.textContent = 'Loading reports…';
+        reportsTable.innerHTML = '<div class="table-scroll"></div>';
+        try{
+          const reports = await loadReports();
+          const normalized = Array.isArray(reports) ? reports.map(report => {
+            const createdValue = report.created || report.created_at || report.createdAt || null;
+            const depotId = report.depot_id || report.depotId || 'unknown';
+            const depotName = report.depot_name || report.depotName || depotId;
+            return {
+              id: report.id,
+              depotId,
+              depotName,
+              kind: report.kind,
+              rows: report.rows,
+              filename: report.filename,
+              csv: report.csv,
+              created: createdValue
+            };
+          }) : [];
+          reportsCache = normalized;
+          if (!normalized.length){
+            reportsMeta.textContent = 'No reports submitted.';
+            reportsTable.innerHTML = '<div class="table-scroll"></div>';
+            return;
+          }
+          reportsMeta.textContent = `${normalized.length} report(s) awaiting review.`;
+          let html = '<div class="table-scroll"><table><thead><tr>';
+          html += '<th>Depot</th><th>Type</th><th>Rows</th><th>Submitted</th><th>Actions</th>';
+          html += '</tr></thead><tbody>';
+          normalized.forEach(report => {
+            let submitted = 'Unknown';
+            if (report.created){
+              const date = new Date(report.created);
+              if (!Number.isNaN(date.getTime())){
+                submitted = date.toLocaleString();
+              }
+            }
+            const kindLabel = 'Final';
+            html += `<tr data-report-id="${report.id}">` +
+                    `<td>${report.depotName || report.depotId}</td>` +
+                    `<td>${kindLabel}</td>` +
+                    `<td>${report.rows ?? '-'}</td>` +
+                    `<td>${submitted}</td>` +
+                    '<td>' +
+                    `<button type="button" class="report-download" data-report="${report.id}">Download</button>` +
+                    `<button type="button" class="report-remove" data-report="${report.id}">Remove</button>` +
+                    '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+          reportsTable.innerHTML = html;
+        }catch(err){
+          console.error('Failed to load reports', err);
+          reportsCache = [];
+          reportsMeta.textContent = 'Unable to load reports.';
+          reportsTable.innerHTML = '<div class="table-scroll"><div style="padding:1rem;text-align:center;">Error loading reports.</div></div>';
+        }finally{
+          reportsLoading = false;
+        }
+      }
+
+      async function downloadReportById(id){
+        if (!id) return;
+        if (reportsLoading){
+          showToast('Reports are still loading. Please wait.', 'info');
+          return;
+        }
+        const report = reportsCache.find(r => r.id === id);
+        if (!report){
+          showToast('Report not found.', 'error');
+          return;
+        }
+        try{
+          const csv = decodeCSV(report.csv);
+          const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = report.filename || `${report.kind}_report.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(()=>URL.revokeObjectURL(a.href),0);
+        }catch(err){
+          console.error('Failed to download report', err);
+          showToast('Unable to download report.', 'error');
+        }
+      }
+
+      async function handleReportAction(event){
+        const btn = event.target.closest('button');
+        if (!btn) return;
+        const id = btn.dataset.report;
+        if (!id) return;
+        if (btn.classList.contains('report-download')){
+          await downloadReportById(id);
+        } else if (btn.classList.contains('report-remove')){
+          try{
+            await removeReport(id);
+            showToast('Report removed.', 'info');
+          }catch(err){
+            console.error('Failed to remove report', err);
+            showToast('Unable to remove report.', 'error');
+          }
+        }
+      }
+
+      function updateMeta(){
+        if (!tableData.length){
+          metaEl.textContent = 'No shared manifest uploaded.';
+        } else {
+          metaEl.textContent = `${fileName || 'Shared Upload'} - ${Math.max(0, tableData.length - 1)} rows`;
+        }
+      }
+
+      uploadEl.addEventListener('change', async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        if (!(await ensureXLSX())){
+          showToast('Excel parser not available. Check your connection and try again.', 'error');
+          uploadEl.value = '';
+          return;
+        }
+        try {
+          const rows = await readWorkbookFile(file);
+          if (!rows.length){
+            showToast('Uploaded workbook is empty.', 'error');
+            tableData = [];
+            renderPreview();
+            updateMeta();
+            return;
+          }
+          tableData = sanitizeTableData(rows);
+          fileName = file.name;
+          renderPreview();
+          updateMeta();
+          const rowCount = Math.max(0, tableData.length - 1);
+          showToast(`Loaded admin workbook (${rowCount} rows).`, 'success');
+        } catch (err) {
+          console.error(err);
+          showToast('Unable to read admin workbook.', 'error');
+        } finally {
+          uploadEl.value = '';
+        }
+      });
+
+      function ensureData(){
+        if (!tableData.length){
+          showToast('Upload a manifest before pushing.', 'error');
+          return false;
+        }
+        return true;
+      }
+
+      function currentFilesMeta(){
+        return [{
+          name: fileName || 'Shared Upload',
+          rows: Math.max(0, tableData.length - 1),
+          pushedBy: currentUser?.name || 'Admin',
+          pushedAt: new Date().toISOString()
+        }];
+      }
+
+      async function pushFinal(targetsOverride=null){
+        if (!ensureData()) return;
+        const targets = Array.isArray(targetsOverride) ? targetsOverride : selectedDepotIds();
+        if (!targets.length){
+          showToast('Select a depot first.', 'error');
+          return;
+        }
+        const meta = currentFilesMeta();
+        const manifest = computeManifestData(tableData);
+        pushFinalEl.disabled = true;
+        pushAllEl.disabled = true;
+        try{
+          await Promise.all(targets.map(userId => {
+            return storeFinalDataForUser(userId, tableData, meta, manifest);
+          }));
+          window.dispatchEvent(new CustomEvent('drm:runsheet-updated', { detail: { prefix: 'admin' } }));
+          showToast(`Pushed manifest to ${targets.length} depot(s).`, 'success');
+        }catch(err){
+          console.error('Failed to push final manifest', err);
+          showToast('Failed to push manifest to depot(s).', 'error');
+        }finally{
+          pushFinalEl.disabled = false;
+          pushAllEl.disabled = false;
+        }
+      }
+
+      pushFinalEl.addEventListener('click', pushFinal);
+      pushAllEl.addEventListener('click', ()=>{
+        const allDepots = USERS.filter(user => user.role === 'depot').map(user => user.id);
+        if (!allDepots.length){
+          showToast('No depots configured.', 'error');
+          return;
+        }
+        pushFinal(allDepots);
+      });
+      reportsTable.addEventListener('click', event=>{
+        handleReportAction(event).catch(err => console.error(err));
+      });
+      window.addEventListener('drm:reports-updated', ()=>{
+        renderReports().catch(err => console.error(err));
+      });
+
+      renderTargets();
+      renderReports().catch(err => console.error(err));
+
+      return {
+        focus: () => uploadEl.focus()
+      };
+    }
+
+    function startApp(user){
+      if (appStarted) return;
+      appStarted = true;
+      currentUser = user;
+
+      const headerTitle = document.querySelector('header h1');
+      if (headerTitle){
+        headerTitle.textContent = user.id === 'glueline' ? 'Glueline Marking' : 'Delivery Run Manager';
+      }
+      const topBar = document.querySelector('.top-bar');
+      if (topBar && user.id !== 'glueline'){
+        const gluelineClear = topBar.querySelector('.glueline-clear-btn');
+        if (gluelineClear){
+          gluelineClear.remove();
+        }
+      }
+
+      if (logoutBtn){
+        logoutBtn.style.display = 'inline-flex';
+        logoutBtn.textContent = `Logout (${user.name})`;
+        if (!logoutBtn.dataset.bound){
+          logoutBtn.addEventListener('click', ()=>{
+            localStorage.removeItem(AUTH_KEY);
+            location.reload();
+          });
+          logoutBtn.dataset.bound = 'true';
+        }
+      }
+
+      const finalTabEl = document.getElementById('tab-final');
+      const finalPanelEl = document.getElementById('panel-final');
+      const adminTabBtn = document.getElementById('tab-admin');
+      const adminPanelEl = document.getElementById('panel-admin');
+
+      const isAdmin = user.role === 'admin';
+      let finalModule = null;
+      let adminModule = null;
+      if (!isAdmin){
+        finalModule = MarkingModule('final');
+        if (finalTabEl) finalTabEl.style.display = '';
+        if (finalPanelEl){
+          finalPanelEl.style.display = '';
+          finalPanelEl.classList.add('active');
+        }
+      }else{
+        if (finalTabEl) finalTabEl.style.display = 'none';
+        if (finalPanelEl) finalPanelEl.style.display = 'none';
+      }
+
+      if (isAdmin){
+        if (adminTabBtn) adminTabBtn.style.display = '';
+        adminModule = AdminModule();
+      }else if (adminTabBtn){
+        adminTabBtn.style.display = 'none';
+        adminPanelEl?.classList.remove('active');
+      }
+
+      let activeTab = isAdmin ? 'admin' : 'final';
+
+      function activate(which){
+        activeTab = which;
+        const tabs = {};
+        const panels = {};
+        if (finalModule){
+          tabs.final = finalTabEl;
+          panels.final = finalPanelEl;
+        }
+        if (adminModule){
+          tabs.admin = adminTabBtn;
+          panels.admin = adminPanelEl;
+        }
+        Object.entries(tabs).forEach(([,tab])=> tab?.setAttribute('aria-selected','false'));
+        Object.entries(panels).forEach(([,panel])=> panel?.classList.remove('active'));
+        if (tabs[which]) tabs[which].setAttribute('aria-selected','true');
+        if (panels[which]) panels[which].classList.add('active');
+        if (which === 'final' && finalModule) finalModule.focus();
+        if (which === 'admin' && adminModule) adminModule.focus();
+      }
+
+      if (finalTabEl && finalModule){
+        finalTabEl.addEventListener('click', ()=>activate('final'));
+      }
+      if (adminModule && adminTabBtn){
+        adminTabBtn.addEventListener('click', ()=>activate('admin'));
+      }
+
+      activate(activeTab);
+
+      window.addEventListener('focus', ()=>{
+        if (activeTab === 'final' && finalModule) finalModule.focus();
+        else if (activeTab === 'admin' && adminModule) adminModule.focus();
+      });
+    }
+
+    setupAuth(startApp);
+  }
+
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+      init();
+    }
+  }
+})();
+
+
+
+
+
+
+
+
+
+
+
