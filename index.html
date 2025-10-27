@@ -417,10 +417,15 @@
           <div class="file-meta" id="admin_meta">No shared manifest uploaded.</div>
           <div class="run-filter-group">
             <label for="admin_target_select">Deliver to</label>
-            <div class="admin-targets" id="admin_targets"></div>
+            <div class="admin-targets" id="admin_targets">
+              <select id="admin_target_select" class="run-filter" disabled>
+                <option value="">No depots available</option>
+              </select>
+            </div>
           </div>
           <div class="report-btn" id="admin_push_final" tabindex="0">Push to Depot</div>
           <div class="report-btn" id="admin_push_all" tabindex="0">Push to All Depots</div>
+          <div class="clear-btn" id="admin_clear_cache" tabindex="0">Clear Local Cache</div>
         </div>
         <div id="admin_preview" class="table-wrapper"><div class="table-scroll"></div></div>
       </section>
@@ -456,6 +461,15 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
+  <script>
+    // Fallback Supabase config for environments (e.g. GitHub Pages) where config.js is absent.
+    if (!window.SUPABASE_CONFIG) {
+      window.SUPABASE_CONFIG = {
+        url: 'https://iyzhghccbtroxrxunxsb.supabase.co',
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5emhnaGNjYnRyb3hyeHVueHNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MTAzMjMsImV4cCI6MjA3NzA4NjMyM30.BT4t4oc7prQZUgk3n5b0bYD_iFgTJ3MXsWUruKxT2Nw'
+      };
+    }
+  </script>
   <script src="script.js" defer></script>
 </body>
 </html>
