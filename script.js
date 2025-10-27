@@ -267,6 +267,7 @@
       { id:'sydney',   name:'Sydney Depot', role:'depot' },
       { id:'brisbane', name:'Brisbane Depot', role:'depot' },
       { id:'perth',    name:'Perth Depot', role:'depot' },
+      { id:'glueline', name:'Glueline',      role:'depot' },
       { id:'admin',    name:'Administrator', role:'admin' }
     ];
     const PASSWORDS = {
@@ -383,6 +384,11 @@
       const scheduleWrap   = document.getElementById(prefix + '_schedule_table');
       const summaryEl      = document.getElementById(prefix + '_scanned_summary');
       const filterClearEl  = document.getElementById(prefix + '_filter_clear');
+      const isGlueline     = currentUser?.id === 'glueline';
+      const topBar         = document.querySelector('.top-bar');
+      const gluelineLogWrap = isGlueline ? document.createElement('div') : null;
+      let gluelineLogEntries = [];
+      let gluelineLogBody = null;
       const filtersDisabled = prefix === 'final';
       const runFilterEl    = filtersDisabled ? null : document.getElementById(prefix + '_run_filter');
       const canUpload      = currentUser?.role === 'admin';
@@ -466,6 +472,85 @@
       }
       if (summaryEl) summaryEl.style.display = 'none';
 
+      if (gluelineLogWrap){
+        gluelineLogWrap.className = 'glueline-log';
+        gluelineLogWrap.innerHTML = '<div class="glueline-log-title">Scan Log</div><div class="glueline-log-body"><div class="glueline-log-empty">No scans yet.</div></div>';
+        gluelineLogBody = gluelineLogWrap.querySelector('.glueline-log-body');
+      }
+
+      const parentCard = scanEl.closest('.card');
+      if (isGlueline){
+        const logoutBtnEl = document.getElementById('auth_logout');
+        if (tableWrap) tableWrap.style.display = 'none';
+        if (scheduleWrap) scheduleWrap.style.display = 'none';
+        if (fileMeta) fileMeta.style.display = 'none';
+        if (scheduleMeta) scheduleMeta.style.display = 'none';
+        if (fileEl){
+          fileEl.disabled = true;
+          fileEl.style.display = 'none';
+        }
+        if (exportEl){
+          exportEl.style.display = 'none';
+          exportEl.tabIndex = -1;
+          exportEl.setAttribute('aria-hidden','true');
+        }
+        if (clearEl){
+          clearEl.style.display = 'none';
+          clearEl.setAttribute('aria-hidden','true');
+          clearEl.tabIndex = -1;
+        }
+        let topClearBtn = document.getElementById('glueline_clear_top');
+        if (!topClearBtn){
+          topClearBtn = document.createElement('button');
+          topClearBtn.type = 'button';
+          topClearBtn.id = 'glueline_clear_top';
+          topClearBtn.className = 'glueline-clear-btn';
+          topClearBtn.textContent = 'Clear Final';
+          topClearBtn.addEventListener('click', ()=>{ clearEl?.click(); });
+        }
+        if (topBar && !topClearBtn.isConnected){
+          if (logoutBtnEl){
+            topBar.insertBefore(topClearBtn, logoutBtnEl);
+          }else{
+            topBar.appendChild(topClearBtn);
+          }
+        }
+        if (parentCard){
+          parentCard.classList.add('glueline-condensed');
+          if (gluelineLogWrap && !gluelineLogWrap.isConnected){
+            parentCard.appendChild(gluelineLogWrap);
+          }
+        }
+      }else{
+        if (tableWrap) tableWrap.style.display = '';
+        if (scheduleWrap) scheduleWrap.style.display = '';
+        if (fileMeta) fileMeta.style.display = '';
+        if (scheduleMeta) scheduleMeta.style.display = '';
+        if (fileEl) fileEl.style.display = '';
+        if (exportEl){
+          exportEl.style.display = '';
+          exportEl.tabIndex = 0;
+          exportEl.removeAttribute('aria-hidden');
+        }
+        if (clearEl){
+          clearEl.style.display = '';
+          clearEl.removeAttribute('aria-hidden');
+          clearEl.tabIndex = 0;
+        }
+        const topClearBtn = document.getElementById('glueline_clear_top');
+        if (topClearBtn){
+          topClearBtn.remove();
+        }
+        if (parentCard){
+          parentCard.classList.remove('glueline-condensed');
+        }
+        if (gluelineLogWrap && gluelineLogWrap.isConnected){
+          gluelineLogWrap.remove();
+        }
+        gluelineLogEntries = [];
+        gluelineLogBody = null;
+      }
+
       if (!canUpload){
         if (fileEl){
           fileEl.disabled = true;
@@ -493,12 +578,20 @@
         statusEl.className = 'status-card';
         const card = fileEl.closest('.card');
         const controls = card?.querySelector('.controls');
-        if (card && controls) card.insertBefore(statusEl, controls.nextSibling);
+        if (card && controls){
+          if (isGlueline){
+            controls.appendChild(statusEl);
+          }else{
+            card.insertBefore(statusEl, controls.nextSibling);
+          }
+        }
         return statusEl;
       }
 
       function setStatus({so, run, drop, scannedCount, total, statusMessage}){
         const el = ensureStatus();
+        const isGlueline = currentUser?.id === 'glueline';
+        el.classList.toggle('status-card--glueline', !!isGlueline);
         const routeExists = (run && run !== '-') || (drop && drop !== '-');
         const runPart = run && run !== '-' ? String(run) : '';
         const dropPart = drop && drop !== '-' ? String(drop) : '';
@@ -512,7 +605,7 @@
         } else {
           routeHTML = `<div class="status-route status-route--missing">Not routed</div>`;
         }
-        const progressHTML = hasRunsheetUI
+        const progressHTML = (hasRunsheetUI && !isGlueline)
           ? `<div class="status-meta"><span class="status-label">Progress</span><span class="status-progress">${escapeHTML(String(scannedCount ?? 0))}/${escapeHTML(String(total ?? 0))}</span></div>`
           : '';
         el.innerHTML = `
@@ -526,6 +619,71 @@
       }
 
       const toast = showToast;
+
+      function updateGluelineLog(){
+        if (!gluelineLogWrap || !gluelineLogBody) return;
+        if (!gluelineLogEntries.length){
+          gluelineLogBody.innerHTML = '<div class="glueline-log-empty">No scans yet.</div>';
+          return;
+        }
+        const entriesHTML = gluelineLogEntries.map(entry=>{
+          const runText = entry.run && entry.run !== '-' ? `Run ${entry.run}` : 'Run -';
+          const dropText = entry.drop && entry.drop !== '-' ? `Drop ${entry.drop}` : 'Drop -';
+          const timeText = entry.time || '';
+          return `
+            <div class="glueline-log-entry">
+              <div class="glueline-log-row">
+                <span class="glueline-log-so">${escapeHTML(entry.so || '-')}</span>
+                <span class="glueline-log-time">${escapeHTML(timeText)}</span>
+              </div>
+              <div class="glueline-log-meta">${escapeHTML(runText)} · ${escapeHTML(dropText)}</div>
+              <div class="glueline-log-code">${escapeHTML(entry.code || '-')}</div>
+            </div>
+          `;
+        }).join('');
+        gluelineLogBody.innerHTML = entriesHTML;
+      }
+
+      function recordGluelineScan({ code, so, run, drop, time }){
+        if (!isGlueline || !gluelineLogWrap) return;
+        gluelineLogEntries.unshift({
+          code,
+          so,
+          run: run || '-',
+          drop: drop || '-',
+          time: time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        if (gluelineLogEntries.length > 200){
+          gluelineLogEntries.length = 200;
+        }
+        updateGluelineLog();
+      }
+
+      function rebuildGluelineLogFromStoredScans(){
+        if (!isGlueline || !gluelineLogWrap || !scanned) return;
+        const rebuilt = [];
+        Object.entries(scanned).forEach(([so, set])=>{
+          if (!set || typeof set.forEach !== 'function') return;
+          const { run, drop } = firstRunDrop(so);
+          Array.from(set).forEach(code=>{
+            rebuilt.push({
+              code,
+              so,
+              run: run || '-',
+              drop: drop || '-',
+              time: '—'
+            });
+          });
+        });
+        if (!rebuilt.length) return;
+        rebuilt.sort((a, b)=>{
+          const soCompare = String(a.so).localeCompare(String(b.so), undefined, { sensitivity:'base', numeric:true });
+          if (soCompare !== 0) return soCompare;
+          return String(a.code).localeCompare(String(b.code), undefined, { sensitivity:'base', numeric:true });
+        });
+        gluelineLogEntries = rebuilt;
+        updateGluelineLog();
+      }
 
       function updateFileMeta(){
         if (!fileMeta) return;
@@ -710,11 +868,11 @@
         scanEl.disabled = true;
         updateFilterUI();
         updateSummaryDisplay();
-        if(clear){
-          if (hasRunsheetUI){
-            localStorage.removeItem(KEYS.table);
-            localStorage.removeItem(KEYS.gen);
-            localStorage.removeItem(KEYS.lookup);
+      if(clear){
+        if (hasRunsheetUI){
+          localStorage.removeItem(KEYS.table);
+          localStorage.removeItem(KEYS.gen);
+          localStorage.removeItem(KEYS.lookup);
             localStorage.removeItem(KEYS.files);
           }
           if (hasScheduleUI){
@@ -724,8 +882,17 @@
           localStorage.removeItem(KEYS.notes);
         }
         updateFileMeta();
-        refreshSchedule({ fetchRemote: false });
+        const shouldFetch = clear && SUPABASE_ENABLED;
+        if (hasScheduleUI){
+          refreshSchedule({ fetchRemote: shouldFetch, preserveLocal: !clear });
+        } else {
+          loadInitialData({ fetchRemote: shouldFetch, preserveLocal: !clear }).catch(err => console.error(err));
+        }
         updateScanAvailability();
+        if (isGlueline){
+          gluelineLogEntries = [];
+          updateGluelineLog();
+        }
         if (runFilterEl){
           runFilterEl.value = 'all';
           runFilterEl.disabled = true;
@@ -840,7 +1007,7 @@
         pruneNotes();
       }
 
-      async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false } = {}){
+      async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false, preserveLocal = true } = {}){
         const depotId = currentUser?.id || 'unknown';
         tableData = [];
         generated = {};
@@ -862,10 +1029,15 @@
           }catch{}
         }
 
+        const hasLocalManifest = preserveLocal && (
+          tableData.length > 1 ||
+          Object.values(scanned || {}).some(set => set && typeof set.size === 'number' && set.size > 0)
+        );
+
         if (fetchRemote && SUPABASE_ENABLED){
           try{
             const remote = await fetchLatestDepotManifest(depotId);
-            if (remote?.payload){
+            if (remote?.payload && !hasLocalManifest){
               hydrateStateFromPayload(remote.payload);
             } else if (!remote && !tableData.length && !isInitial){
               showToast('No shared manifest available yet.', 'info');
@@ -888,6 +1060,10 @@
         }else{
           generated = {};
           rowLookup = {};
+        }
+
+        if (isGlueline && gluelineLogEntries.length === 0){
+          rebuildGluelineLogFromStoredScans();
         }
 
         if (!hasRunsheetUI){
@@ -917,8 +1093,8 @@
 
       function refreshSchedule(options = {}){
         if (!hasScheduleUI) return;
-        const { fetchRemote = false, isInitial = false } = options || {};
-        loadInitialData({ fetchRemote, isInitial }).catch(err => console.error(err));
+        const { fetchRemote = false, isInitial = false, preserveLocal = true } = options || {};
+        loadInitialData({ fetchRemote, isInitial, preserveLocal }).catch(err => console.error(err));
       }
 
       function updateRowHighlight(so){
@@ -1092,6 +1268,7 @@
         updateRowHighlight(so);
         lastScanInfo = { so, run, drop };
         updateSummaryDisplay();
+        recordGluelineScan({ code: nextCode, so, run, drop });
         save();
         focusScan();
         toast('Consignment marked manually.', 'success');
@@ -1288,6 +1465,7 @@
         updateRowHighlight(so);
         lastScanInfo = { so, run, drop };
         updateSummaryDisplay();
+        recordGluelineScan({ code, so, run, drop });
         if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
         save();
         focusScan();
@@ -1691,6 +1869,18 @@
       if (appStarted) return;
       appStarted = true;
       currentUser = user;
+
+      const headerTitle = document.querySelector('header h1');
+      if (headerTitle){
+        headerTitle.textContent = user.id === 'glueline' ? 'Glueline Marking' : 'Delivery Run Manager';
+      }
+      const topBar = document.querySelector('.top-bar');
+      if (topBar && user.id !== 'glueline'){
+        const gluelineClear = topBar.querySelector('.glueline-clear-btn');
+        if (gluelineClear){
+          gluelineClear.remove();
+        }
+      }
 
       if (logoutBtn){
         logoutBtn.style.display = 'inline-flex';
