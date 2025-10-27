@@ -425,6 +425,7 @@
           </div>
           <div class="report-btn" id="admin_push_final" tabindex="0">Push to Depot</div>
           <div class="report-btn" id="admin_push_all" tabindex="0">Push to All Depots</div>
+          <div class="clear-btn" id="admin_clear_cache" tabindex="0">Clear Local Cache</div>
         </div>
         <div id="admin_preview" class="table-wrapper"><div class="table-scroll"></div></div>
       </section>
