@@ -1471,6 +1471,7 @@
           });
           html += '</tbody></table></div>';
           tableWrap.innerHTML = html;
+          try{ Object.keys(rowLookup || {}).forEach(updateRowHighlight); }catch{}
           updateRunFilterOptions();
           return;
         }
@@ -1491,6 +1492,7 @@
         });
         html += '</tbody></table></div>';
         tableWrap.innerHTML = html;
+        try{ Object.keys(rowLookup || {}).forEach(updateRowHighlight); }catch{}
         updateRunFilterOptions();
       }
 
