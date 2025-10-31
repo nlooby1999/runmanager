@@ -301,6 +301,15 @@
       letter-spacing:.04em;
       color:var(--text-subtle);
     }
+    /* Emphasize SO column color by scan status */
+    .final-card table tr.partial td:nth-child(3){
+      color:#facc15; /* amber-400 */
+      font-weight:800;
+    }
+    .final-card table tr.completed td:nth-child(3){
+      color:#22c55e; /* green-500 */
+      font-weight:800;
+    }
     /* Run summary chips */
     .run-summary{display:flex;flex-wrap:wrap;gap:.5rem;margin:.2rem 0 .1rem}
     .run-summary .summary-chip{
