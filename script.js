@@ -1,8 +1,8 @@
 (() => {
   function init(){
     // Column positions from the manifest sheets
-    const COL_SO = 4, COL_FP = 10, COL_CH = 11, COL_FL = 12;
 
+    const COL_SO = 4, COL_FP = 10, COL_CH = 11, COL_FL = 12;
     let loadingXLSX = null;
     async function ensureXLSX(){
       if (typeof XLSX !== 'undefined') return true;
@@ -133,30 +133,78 @@
     }
 
     async function storeFinalDataForUser(userId, tableData, filesMeta, manifestData){
-      const sanitizedTable = sanitizeTableData(tableData);
-      const manifest = manifestData || computeManifestData(sanitizedTable);
+      // Merge new data on top of any existing payload for this user,
+      // so multiple runs (e.g., Perth + Adelaide) can be worked together.
+      const incoming = sanitizeTableData(tableData);
+      let mergedTable = incoming;
+      let mergedFiles = Array.isArray(filesMeta) ? filesMeta : [];
+
       if (SUPABASE_ENABLED){
-        const { error } = await supabase
+        try{
+          const { data, error } = await supabase
+            .from('depot_manifests')
+            .select('payload, created_at')
+            .eq('depot_id', userId)
+            .eq('kind', 'final')
+            .order('created_at', { ascending:false })
+            .limit(1);
+          if (!error && Array.isArray(data) && data.length && data[0]?.payload?.tableData){
+            const existing = data[0].payload;
+            const header = (existing.tableData?.[0]?.length ? existing.tableData[0] : (incoming[0] || []));
+            const existingBody = (existing.tableData || []).slice(1).filter(rowHasMeaningfulData);
+            const newBody = incoming.slice(1).filter(rowHasMeaningfulData);
+            mergedTable = sanitizeTableData([header, ...existingBody, ...newBody]);
+            const existingFiles = Array.isArray(existing.filesMeta) ? existing.filesMeta : [];
+            mergedFiles = existingFiles.concat(mergedFiles);
+          }
+        }catch(fetchErr){
+          console.error('Merge fetch failed, pushing incoming only', fetchErr);
+          mergedTable = incoming;
+          mergedFiles = Array.isArray(filesMeta) ? filesMeta : [];
+        }
+
+        const manifest = manifestData || computeManifestData(mergedTable);
+        const { error: insertError } = await supabase
           .from('depot_manifests')
           .insert({
             depot_id: userId,
             kind: 'final',
             payload: {
-              tableData: sanitizedTable,
-              filesMeta,
+              tableData: mergedTable,
+              filesMeta: mergedFiles,
               generated: manifest.generated,
               rowLookup: manifest.rowLookup
             },
             uploaded_by: currentUser?.id || 'admin'
           });
-        if (error) throw error;
+        if (insertError) throw insertError;
       } else {
+        // Local fallback: merge with any existing cached final for that user.
         const base = suffix => `drm_${userId}_final_${suffix}`;
-        localStorage.setItem(base('table_v2'), JSON.stringify(sanitizedTable));
+        try{
+          const existingRaw = localStorage.getItem(base('table_v2'));
+          const existingFilesRaw = localStorage.getItem(base('files_meta_v2'));
+          if (existingRaw){
+            const existingTable = JSON.parse(existingRaw) || [];
+            const header = (existingTable?.[0]?.length ? existingTable[0] : (incoming[0] || []));
+            const existingBody = (existingTable || []).slice(1).filter(rowHasMeaningfulData);
+            const newBody = incoming.slice(1).filter(rowHasMeaningfulData);
+            mergedTable = sanitizeTableData([header, ...existingBody, ...newBody]);
+            const existingFiles = existingFilesRaw ? (JSON.parse(existingFilesRaw) || []) : [];
+            mergedFiles = (existingFiles || []).concat(mergedFiles);
+          }
+        }catch(parseErr){
+          console.error('Local merge failed, replacing with incoming', parseErr);
+          mergedTable = incoming;
+          mergedFiles = Array.isArray(filesMeta) ? filesMeta : [];
+        }
+
+        const manifest = manifestData || computeManifestData(mergedTable);
+        localStorage.setItem(base('table_v2'), JSON.stringify(mergedTable));
         localStorage.setItem(base('generated_v2'), JSON.stringify(manifest.generated));
         localStorage.setItem(base('rowlookup_v2'), JSON.stringify(manifest.rowLookup));
-        localStorage.setItem(base('files_meta_v2'), JSON.stringify(filesMeta));
-        localStorage.setItem(base('scanned_v2'), JSON.stringify({}));
+        localStorage.setItem(base('files_meta_v2'), JSON.stringify(mergedFiles));
+        // Preserve any existing scans; do not reset scanned_v2 here.
       }
     }
 
@@ -260,6 +308,8 @@
       }
       return `${hex[0]}${hex[1]}-${hex[2]}-${hex[3]}-${hex[4]}-${hex[5]}${hex[6]}${hex[7]}`;
     }
+
+    const CLIENT_INSTANCE_ID = generateClientUuid();
 
     const USERS = [
       { id:'albury',   name:'Albury Depot', role:'depot' },
@@ -380,16 +430,39 @@
       const scanEl         = document.getElementById(prefix + '_scan');
       const clearEl        = document.getElementById(prefix + '_clear');
       const exportEl       = document.getElementById(prefix + '_export');
+      const exportTopEl    = document.getElementById(prefix + '_export_top');
       const tableWrap      = document.getElementById(prefix + '_table');
       const scheduleWrap   = document.getElementById(prefix + '_schedule_table');
       const summaryEl      = document.getElementById(prefix + '_scanned_summary');
       const filterClearEl  = document.getElementById(prefix + '_filter_clear');
       const isGlueline     = currentUser?.id === 'glueline';
+      const isDepotUser    = currentUser?.role === 'depot';
+      const currentDepotId = currentUser?.id || 'unknown';
+      const remoteScansEnabled = Boolean(SUPABASE_ENABLED && isDepotUser);
+      const isFinalModule  = prefix === 'final';
       const topBar         = document.querySelector('.top-bar');
       const gluelineLogWrap = isGlueline ? document.createElement('div') : null;
       let gluelineLogEntries = [];
       let gluelineLogBody = null;
-      const filtersDisabled = prefix === 'final';
+      let gluelineRealtimeChannel = null;
+      const GLUELINE_LOG_LIMIT = 200;
+      const SCAN_LOG_TABLE = 'glueline_scans';
+      const soLogWrap = (isFinalModule && !isGlueline) ? document.getElementById(prefix + '_so_log') : null;
+      const soLogBody = soLogWrap ? soLogWrap.querySelector('.so-log-body') : null;
+      const soLogTitle = soLogWrap ? soLogWrap.querySelector('.so-log-title') : null;
+      const soLogMeta = soLogWrap ? soLogWrap.querySelector('.so-log-meta') : null;
+      const routeDisplayWrap = (isFinalModule && !isGlueline) ? document.getElementById(prefix + '_route_display') : null;
+      const routeSoEl = routeDisplayWrap ? routeDisplayWrap.querySelector('.route-value--so') : null;
+      const routeRunEl = routeDisplayWrap ? routeDisplayWrap.querySelector('.route-value--run') : null;
+      const routeDropEl = routeDisplayWrap ? routeDisplayWrap.querySelector('.route-value--drop') : null;
+      const routeStatusEl = routeDisplayWrap ? routeDisplayWrap.querySelector('.route-display-status') : null;
+      const runStatusWrap = (isFinalModule && !isGlueline) ? document.getElementById(prefix + '_run_status') : null;
+      const runTilesEl = runStatusWrap ? runStatusWrap.querySelector('.run-tiles') : null;
+      const runStatusMetaEl = runStatusWrap ? runStatusWrap.querySelector('.run-status-meta') : null;
+      let gluelineRealtimeInitialized = false;
+      let gluelineRealtimeInitializing = false;
+      let gluelineBeforeUnloadBound = false;
+      const filtersDisabled = isFinalModule;
       const runFilterEl    = filtersDisabled ? null : document.getElementById(prefix + '_run_filter');
       const canUpload      = currentUser?.role === 'admin';
 
@@ -401,6 +474,10 @@
       }
       if (!hasRunsheetUI && !hasScheduleUI) {
         return { focus: () => {} };
+      }
+
+      if (exportTopEl && exportEl){
+        exportTopEl.addEventListener('click', ()=> exportEl.click());
       }
 
       const baseKey = (suffix)=>{
@@ -426,17 +503,140 @@
       let scheduleEntries = [];
       let filteredSO = null;
       let runFilter = 'all';
+      // multi-select runs removed; using single runFilter only
       let lastScanInfo = null;
       let autoScanTimer = null;
       let notes = {};
+      let runSOMap = new Map();
       const AUTOSCAN_DELAY = 120;
-      const MIN_BARCODE_LENGTH = 11;
+      const MIN_BARCODE_LENGTH = 11; // e.g., SO252101001
+      const AUTO_ENTER_ON_LENGTH = true; // auto-enter when value length matches exactly
 
       const extractSO = v => {
         const upper = String(v ?? '').toUpperCase();
         const match = upper.match(/SO\d+/);
         return match ? match[0] : '';
       };
+
+      function rebuildRunSOMap(){
+        runSOMap = new Map();
+        if (!Array.isArray(tableData) || tableData.length <= 1) return;
+        tableData.slice(1).forEach(row => {
+          const runVal = String(row?.[0] ?? '').trim();
+          const soVal = normSO(row?.[COL_SO]);
+          if (!runVal || !soVal) return;
+          const key = runVal.toUpperCase();
+          let set = runSOMap.get(key);
+          if (!set){ set = new Set(); runSOMap.set(key, set); }
+          set.add(soVal);
+        });
+      }
+
+      function computeRunProgress(runKey){
+        const sos = runSOMap.get(runKey) || new Set();
+        let total = 0;
+        let scannedCount = 0;
+        sos.forEach(so => {
+          total += (generated[so]?.length ?? 0);
+          scannedCount += (scanned[so]?.size ?? 0);
+        });
+        return { total, scanned: scannedCount };
+      }
+
+      function renderRunStatus(){
+        if (!runStatusWrap || !runTilesEl) return;
+        const runs = Array.from(runSOMap.keys()).sort((a,b)=> a.localeCompare(b, undefined, { numeric:true, sensitivity:'base' }));
+        if (!runs.length){
+          runTilesEl.innerHTML = '';
+          if (runStatusMetaEl) runStatusMetaEl.textContent = 'No runs loaded.';
+          return;
+        }
+        const activeUpper = (runFilter || 'all').trim().toUpperCase();
+        const tiles = [];
+        tiles.push(`<div class="run-tile${activeUpper==='ALL' ? ' run-tile--active' : ''}" title="Show all runs" aria-label="Show all runs">All</div>`);
+        runs.forEach(run => {
+          const { total, scanned } = computeRunProgress(run);
+          let cls = 'run-tile';
+          if (total > 0 && scanned >= total) cls += ' run-tile--complete';
+          else if (scanned > 0) cls += ' run-tile--partial';
+          if (activeUpper === String(run).toUpperCase()) cls += ' run-tile--active';
+          tiles.push(`<div class="${cls}" title="Run ${escapeHTML(run)}: ${scanned}/${total} scanned" aria-label="Run ${escapeHTML(run)} ${scanned} of ${total} scanned">${escapeHTML(run)}</div>`);
+        });
+        runTilesEl.innerHTML = tiles.join('');
+        // No checkbox enhancement; simple clickable tiles only
+        if (runStatusMetaEl) {
+          const activeUpper = (runFilter || 'all').trim().toUpperCase();
+          const which = activeUpper==='ALL' ? 'Showing all runs' : `Showing run ${activeUpper}`;
+          runStatusMetaEl.textContent = `${which}. Green = complete, Yellow = partial`;
+        }
+        renderRunSummary();
+      }
+
+      function computeRunSummary(runUpper){
+        const upper = String(runUpper || '').toUpperCase();
+        let totalWeight = 0;
+        let totalFP = 0;
+        const drops = new Set();
+        tableData.slice(1).forEach(row => {
+          const runVal = String(row?.[0] ?? '').trim().toUpperCase();
+          if (!upper || runVal !== upper) return;
+          const cells = manifestRowToCells(row);
+          const dropVal = cells[1];
+          if (dropVal && dropVal !== '-') drops.add(String(dropVal));
+          const fpVal = coerceCount(cells[3]);
+          totalFP += fpVal;
+          const wRaw = String(cells[12] ?? '').trim();
+          const wNum = parseFloat(wRaw.replace(/[^0-9.\-]/g, ''));
+          if (!Number.isNaN(wNum)) totalWeight += wNum;
+        });
+        return { weight: totalWeight, drops: drops.size, fp: totalFP };
+      }
+
+      function renderRunSummary(){
+        if (!runStatusWrap) return;
+        let summaryEl = runStatusWrap.querySelector('.run-summary');
+        if (!summaryEl){
+          summaryEl = document.createElement('div');
+          summaryEl.className = 'run-summary';
+          if (runTilesEl && runTilesEl.parentElement === runStatusWrap){
+            runStatusWrap.insertBefore(summaryEl, runTilesEl);
+          } else if (runStatusMetaEl && runStatusMetaEl.parentElement === runStatusWrap){
+            runStatusWrap.insertBefore(summaryEl, runStatusMetaEl.nextSibling);
+          } else {
+            runStatusWrap.appendChild(summaryEl);
+          }
+        }
+        const activeUpper = (runFilter || 'all').trim().toUpperCase();
+        if (activeUpper === 'ALL' || tableData.length <= 1){
+          summaryEl.style.display = 'none';
+          summaryEl.textContent = '';
+          return;
+        }
+        const { weight, drops, fp } = computeRunSummary(activeUpper);
+        summaryEl.style.display = '';
+        let wText = String(weight);
+        try{ wText = Number.isFinite(weight) ? weight.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '0'; }catch{}
+        summaryEl.innerHTML = `
+          <div class=\"summary-chip summary-chip--weight\"><span class=\"chip-label\">Weight</span><span class=\"chip-value\">${wText}</span></div>
+          <div class=\"summary-chip summary-chip--drops\"><span class=\"chip-label\">Drops</span><span class=\"chip-value\">${drops}</span></div>
+          <div class=\"summary-chip summary-chip--fp\"><span class=\"chip-label\">FP</span><span class=\"chip-value\">${fp}</span></div>
+        `;
+      }
+
+      if (runTilesEl && !runTilesEl.dataset.bound){
+        runTilesEl.addEventListener('click', (event)=>{
+          const tile = event.target.closest('.run-tile');
+          if (!tile) return;
+          const label = String(tile.textContent || '').trim();
+          const upper = label.toUpperCase();
+          runFilter = (upper === 'ALL') ? 'all' : label;
+          renderTable();
+          renderScheduleTable();
+          renderRunStatus();
+          if (hasRunsheetUI) focusScan();
+        });
+        runTilesEl.dataset.bound = 'true';
+      }
 
       async function fetchLatestDepotManifest(depotId){
         if (!SUPABASE_ENABLED || !depotId) return null;
@@ -494,6 +694,15 @@
           exportEl.tabIndex = -1;
           exportEl.setAttribute('aria-hidden','true');
         }
+        if (exportTopEl){
+          exportTopEl.style.display = 'none';
+          exportTopEl.tabIndex = -1;
+          exportTopEl.setAttribute('aria-hidden','true');
+        }
+        if (runFilterEl){
+          const group = runFilterEl.closest('.run-filter-group');
+          if (group) group.style.display = 'none';
+        }
         if (clearEl){
           clearEl.style.display = 'none';
           clearEl.setAttribute('aria-hidden','true');
@@ -508,12 +717,16 @@
           topClearBtn.textContent = 'Clear Final';
           topClearBtn.addEventListener('click', ()=>{ clearEl?.click(); });
         }
-        if (topBar && !topClearBtn.isConnected){
-          if (logoutBtnEl){
-            topBar.insertBefore(topClearBtn, logoutBtnEl);
-          }else{
-            topBar.appendChild(topClearBtn);
+        if (topBar){
+          if (!topClearBtn.isConnected){
+            const topRightActions = document.querySelector('.top-right-actions') || topBar;
+            if (logoutBtnEl && logoutBtnEl.parentElement === topRightActions){
+              topRightActions.insertBefore(topClearBtn, logoutBtnEl);
+            }else{
+              topRightActions.appendChild(topClearBtn);
+            }
           }
+          topClearBtn.style.display = 'inline-flex';
         }
         if (parentCard){
           parentCard.classList.add('glueline-condensed');
@@ -532,10 +745,14 @@
           exportEl.tabIndex = 0;
           exportEl.removeAttribute('aria-hidden');
         }
-        if (clearEl){
-          clearEl.style.display = '';
-          clearEl.removeAttribute('aria-hidden');
-          clearEl.tabIndex = 0;
+        if (exportTopEl){
+          exportTopEl.style.display = 'inline-flex';
+          exportTopEl.tabIndex = 0;
+          exportTopEl.removeAttribute('aria-hidden');
+        }
+        if (runFilterEl){
+          const group = runFilterEl.closest('.run-filter-group');
+          if (group) group.style.display = '';
         }
         const topClearBtn = document.getElementById('glueline_clear_top');
         if (topClearBtn){
@@ -549,6 +766,28 @@
         }
         gluelineLogEntries = [];
         gluelineLogBody = null;
+      }
+
+      const clearTopBtn = isFinalModule ? document.getElementById(prefix + '_clear_top') : null;
+      if (isFinalModule){
+        if (isGlueline){
+          if (clearTopBtn) clearTopBtn.style.display = 'none';
+        }else{
+          if (clearTopBtn){
+            clearTopBtn.style.display = 'inline-flex';
+            if (!clearTopBtn.dataset.bound){
+              clearTopBtn.addEventListener('click', ()=>{ clearEl?.click(); });
+              clearTopBtn.dataset.bound = 'true';
+            }
+          }
+          if (clearEl){
+            clearEl.style.display = 'none';
+            clearEl.setAttribute('aria-hidden','true');
+            clearEl.tabIndex = -1;
+          }
+        }
+      }else if (clearTopBtn){
+        clearTopBtn.style.display = 'none';
       }
 
       if (!canUpload){
@@ -616,6 +855,20 @@
           ${routeHTML}
           ${progressHTML}
         `;
+        if (isFinalModule && soLogWrap){
+          if (statusMessage){
+            updateSoLogDisplay(so, { statusMessage });
+          } else {
+            updateSoLogDisplay(so);
+          }
+        }
+        if (routeDisplayWrap){
+          if (statusMessage){
+            updateRouteDisplay({ so, run, drop, statusMessage });
+          } else {
+            updateRouteDisplay({ so, run, drop });
+          }
+        }
       }
 
       const toast = showToast;
@@ -644,8 +897,9 @@
         gluelineLogBody.innerHTML = entriesHTML;
       }
 
-      function recordGluelineScan({ code, so, run, drop, time }){
+      function recordGluelineScan({ code, so, run, drop, time }, options = {}){
         if (!isGlueline || !gluelineLogWrap) return;
+        const silent = options?.silent === true;
         gluelineLogEntries.unshift({
           code,
           so,
@@ -653,10 +907,12 @@
           drop: drop || '-',
           time: time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
-        if (gluelineLogEntries.length > 200){
-          gluelineLogEntries.length = 200;
+        if (gluelineLogEntries.length > GLUELINE_LOG_LIMIT){
+          gluelineLogEntries.length = GLUELINE_LOG_LIMIT;
         }
-        updateGluelineLog();
+        if (!silent){
+          updateGluelineLog();
+        }
       }
 
       function rebuildGluelineLogFromStoredScans(){
@@ -671,7 +927,7 @@
               so,
               run: run || '-',
               drop: drop || '-',
-              time: '—'
+              time: '--'
             });
           });
         });
@@ -683,6 +939,197 @@
         });
         gluelineLogEntries = rebuilt;
         updateGluelineLog();
+      }
+
+      function formatGluelineLogTime(value, fallback = ''){
+        if (!value) return fallback;
+        try{
+          const date = value instanceof Date ? value : new Date(value);
+          if (!Number.isFinite(date?.getTime())) return fallback;
+          return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }catch{
+          return fallback;
+        }
+      }
+
+      function addGluelineScannedCode(so, code){
+        const normalizedSO = normSO(so);
+        const normalizedCode = String(code || '').trim().toUpperCase();
+        if (!normalizedSO || !normalizedCode) return { added:false, so: normalizedSO, code: normalizedCode };
+        const set = scanned[normalizedSO] || new Set();
+        const before = set.size;
+        set.add(normalizedCode);
+        scanned[normalizedSO] = set;
+        if (set.size !== before){
+          updateRowHighlight(normalizedSO);
+          return { added:true, so: normalizedSO, code: normalizedCode };
+        }
+        return { added:false, so: normalizedSO, code: normalizedCode };
+      }
+
+      function applyGluelineScanUpdate(record, options = {}){
+        if (!remoteScansEnabled || !record) return;
+        const recordDepot = record.depot_id || record.depotId || record.depot || null;
+        if (recordDepot){
+          if (recordDepot !== currentDepotId) return;
+        } else if (currentDepotId !== 'glueline'){
+          return;
+        }
+        const updateStatus = options.updateStatus !== false;
+        const recordLog = options.recordLog !== false;
+        const persist = options.persist !== false;
+        const deferLogRender = options.deferLogRender === true;
+        const so = normSO(record.so);
+        const code = String(record.code || '').trim().toUpperCase();
+        if (!so || !code) return;
+        const route = firstRunDrop(so);
+        const run = record.run || route.run || '-';
+        const drop = record.drop || route.drop || '-';
+        const time = formatGluelineLogTime(record.created_at || record.createdAt || record.created || record.time, record.time);
+        const { added } = addGluelineScannedCode(so, code);
+        const total = generated[so]?.length ?? 0;
+        const scannedCount = scanned[so]?.size ?? 0;
+        if (updateStatus){
+          setStatus({ so, run, drop, scannedCount, total });
+          lastScanInfo = { so, run, drop };
+          updateSummaryDisplay();
+        }
+        if (hasScheduleUI && !hasRunsheetUI){
+          applyScheduleFilter(so);
+        }
+        if (recordLog){
+          recordGluelineScan({ code, so, run, drop, time }, { silent: deferLogRender });
+        }
+        if (persist && added){
+          save();
+        }
+      }
+
+      function ensureGluelineUnloadBinding(){
+        if (!remoteScansEnabled || gluelineBeforeUnloadBound) return;
+        gluelineBeforeUnloadBound = true;
+        window.addEventListener('beforeunload', teardownGluelineRealtime);
+      }
+
+      function teardownGluelineRealtime(){
+        if (!gluelineRealtimeChannel) return;
+        try{
+          gluelineRealtimeChannel.unsubscribe();
+        }catch(err){
+          console.error('Failed to unsubscribe glueline realtime channel', err);
+        }
+        if (SUPABASE_ENABLED && typeof supabase.removeChannel === 'function'){
+          try{
+            supabase.removeChannel(gluelineRealtimeChannel);
+          }catch{}
+        }
+        gluelineRealtimeChannel = null;
+      }
+
+      function subscribeToGluelineRealtime(){
+        if (!remoteScansEnabled) return;
+        if (gluelineRealtimeChannel) return;
+        const channelName = `public:${SCAN_LOG_TABLE}:${currentDepotId}`;
+        const realtimeFilter = currentDepotId ? `depot_id=eq.${currentDepotId}` : undefined;
+        const changeConfig = {
+          event: 'INSERT',
+          schema: 'public',
+          table: SCAN_LOG_TABLE
+        };
+        if (realtimeFilter) changeConfig.filter = realtimeFilter;
+        gluelineRealtimeChannel = supabase
+          .channel(channelName)
+          .on('postgres_changes', changeConfig, payload=>{
+            const record = payload?.new;
+            if (!record) return;
+            if (record.client_id && record.client_id === CLIENT_INSTANCE_ID) return;
+            applyGluelineScanUpdate(record);
+          });
+        gluelineRealtimeChannel.subscribe(status=>{
+          if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
+            gluelineRealtimeChannel = null;
+          }
+        });
+      }
+
+      function syncGluelineScanRemote(payload){
+        if (!remoteScansEnabled) return Promise.resolve();
+        const so = normSO(payload?.so);
+        const code = String(payload?.code || '').trim().toUpperCase();
+        if (!so || !code) return Promise.resolve();
+        const run = payload?.run || null;
+        const drop = payload?.drop || null;
+        return supabase
+          .from(SCAN_LOG_TABLE)
+          .insert({
+            id: generateClientUuid(),
+            so,
+            code,
+            run,
+            drop,
+            depot_id: currentDepotId,
+            client_id: CLIENT_INSTANCE_ID
+          })
+          .then(({ error })=>{
+            if (error) throw error;
+          })
+          .catch(err=>{
+            console.error('Failed to sync scan to Supabase', err);
+          });
+      }
+
+      async function hydrateGluelineLogFromRemote(){
+        if (!remoteScansEnabled) return;
+        try{
+          let builder = supabase
+            .from(SCAN_LOG_TABLE)
+            .select('id, so, code, run, drop, depot_id, client_id, created_at');
+          if (currentDepotId){
+            builder = builder.eq('depot_id', currentDepotId);
+          }
+          const { data, error } = await builder
+            .order('created_at', { ascending:false })
+            .limit(GLUELINE_LOG_LIMIT);
+          if (error) throw error;
+          if (!Array.isArray(data)) return;
+          gluelineLogEntries = [];
+          data.slice().reverse().forEach(row=>{
+            applyGluelineScanUpdate(row, {
+              updateStatus: false,
+              persist: false,
+              deferLogRender: true
+            });
+          });
+          if (gluelineLogEntries.length){
+            const latest = gluelineLogEntries[0];
+            const latestSO = normSO(latest.so);
+            const total = latestSO ? (generated[latestSO]?.length ?? 0) : 0;
+            const scannedCount = latestSO ? (scanned[latestSO]?.size ?? 0) : 0;
+            setStatus({ so: latestSO, run: latest.run, drop: latest.drop, scannedCount, total });
+            lastScanInfo = { so: latestSO, run: latest.run, drop: latest.drop };
+          }
+          updateGluelineLog();
+          updateSummaryDisplay();
+          save();
+        }catch(err){
+          console.error('Failed to load glueline scan log', err);
+        }
+      }
+
+      async function ensureGluelineRealtime(){
+        if (!remoteScansEnabled) return;
+        if (gluelineRealtimeInitialized || gluelineRealtimeInitializing) return;
+        gluelineRealtimeInitializing = true;
+        try{
+          await hydrateGluelineLogFromRemote();
+        }catch(err){
+          console.error('Unable to hydrate glueline log from Supabase', err);
+        }finally{
+          gluelineRealtimeInitializing = false;
+        }
+        subscribeToGluelineRealtime();
+        ensureGluelineUnloadBinding();
+        gluelineRealtimeInitialized = true;
       }
 
       function updateFileMeta(){
@@ -743,10 +1190,98 @@
         `;
       }
 
+      function resetSoLogDisplay(message){
+        if (!soLogBody) return;
+        if (soLogTitle) soLogTitle.textContent = 'Scan Log';
+        if (soLogMeta) soLogMeta.textContent = message || 'Scan a barcode to view consignments for that sales order.';
+        soLogBody.innerHTML = '<div class="so-log-empty">No sales order selected.</div>';
+        if (routeDisplayWrap) resetRouteDisplay(message);
+        if (runStatusWrap){
+          rebuildRunSOMap();
+          renderRunStatus();
+        }
+      }
+
+      function updateSoLogDisplay(so, { statusMessage } = {}){
+        if (!soLogBody) return;
+        const normalizedSO = normSO(so);
+        if (!normalizedSO){
+          resetSoLogDisplay();
+          if (routeDisplayWrap) resetRouteDisplay();
+          return;
+        }
+        const consignments = generated[normalizedSO] || [];
+        if (soLogTitle) soLogTitle.textContent = `Sales Order ${escapeHTML(normalizedSO)}`;
+        if (statusMessage){
+          if (soLogMeta) soLogMeta.textContent = statusMessage;
+          soLogBody.innerHTML = `<div class="so-log-empty">${escapeHTML(statusMessage)}</div>`;
+          return;
+        }
+        if (!consignments.length){
+          if (soLogMeta) soLogMeta.textContent = 'No consignments found for this sales order.';
+          soLogBody.innerHTML = '<div class="so-log-empty">No consignments are expected for this sales order.</div>';
+          return;
+        }
+        const scannedSet = scanned[normalizedSO] || new Set();
+        const scannedCodes = Array.from(scannedSet);
+        const pendingCodes = consignments.filter(code => !scannedSet.has(code));
+        if (soLogMeta){
+          soLogMeta.textContent = `${scannedCodes.length}/${consignments.length} consignments scanned`;
+        }
+        const scannedHTML = scannedCodes.length
+          ? scannedCodes.map(code => `<span class="log-code log-code--scanned">${escapeHTML(code)}</span>`).join('')
+          : '<span class="so-log-empty-note">None yet.</span>';
+        const pendingHTML = pendingCodes.length
+          ? pendingCodes.map(code => `<span class="log-code log-code--pending">${escapeHTML(code)}</span>`).join('')
+          : '<span class="so-log-empty-note">All consignments have been scanned.</span>';
+        soLogBody.innerHTML = `
+          <div class="so-log-section">
+            <div class="so-log-section-title">Scanned (${scannedCodes.length})</div>
+            <div class="so-log-code-list">${scannedHTML}</div>
+          </div>
+          <div class="so-log-section">
+            <div class="so-log-section-title">Pending (${pendingCodes.length})</div>
+            <div class="so-log-code-list">${pendingHTML}</div>
+          </div>
+        `;
+      }
+
+      function resetRouteDisplay(message){
+        if (!routeDisplayWrap) return;
+        const statusText = message || 'Awaiting scan.';
+        if (routeSoEl) routeSoEl.textContent = '-';
+        if (routeRunEl) routeRunEl.textContent = '-';
+        if (routeDropEl) routeDropEl.textContent = '-';
+        if (routeStatusEl){
+          routeStatusEl.textContent = statusText;
+          routeStatusEl.classList.remove('route-display-status--success','route-display-status--error');
+          routeStatusEl.classList.add('route-display-status--info');
+        }
+      }
+
+      function updateRouteDisplay({ so, run, drop, statusMessage } = {}){
+        if (!routeDisplayWrap) return;
+        if (routeSoEl) routeSoEl.textContent = so ? String(so) : '-';
+        if (routeRunEl) routeRunEl.textContent = run && run !== '-' ? String(run) : '-';
+        if (routeDropEl) routeDropEl.textContent = drop && drop !== '-' ? String(drop) : '-';
+        if (routeStatusEl){
+          routeStatusEl.classList.remove('route-display-status--info','route-display-status--success','route-display-status--error');
+          if (statusMessage){
+            routeStatusEl.textContent = statusMessage;
+            routeStatusEl.classList.add('route-display-status--error');
+          }else{
+            routeStatusEl.textContent = 'Route details updated.';
+            routeStatusEl.classList.add('route-display-status--success');
+          }
+        }
+      }
+
       function recalcManifest(){
         const manifest = computeManifestData(tableData);
         generated = manifest.generated;
         rowLookup = manifest.rowLookup;
+        rebuildRunSOMap();
+        renderRunStatus();
       }
 
       function applyScheduleFilter(so){
@@ -868,6 +1403,10 @@
         scanEl.disabled = true;
         updateFilterUI();
         updateSummaryDisplay();
+        if (isFinalModule){
+          resetSoLogDisplay();
+          resetRouteDisplay();
+        }
       if(clear){
         if (hasRunsheetUI){
           localStorage.removeItem(KEYS.table);
@@ -902,8 +1441,40 @@
       function renderTable(){
         if (!hasRunsheetUI || !tableWrap) return;
         pruneNotes();
-        const headers = MANIFEST_HEADERS;
         const normalizedFilter = runFilter.trim().toUpperCase();
+        if (isFinalModule && !isGlueline){
+          const headers = ['Run / Drop','Zone','Sales Order','Name','FP','Type','Notes'];
+          let html = '<div class="table-scroll"><table><thead><tr>';
+          headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
+          html += '</tr></thead><tbody>';
+          tableData.slice(1).forEach((row, idx)=>{
+            if (runFilter !== 'all'){
+              const runValue = String(row?.[0] ?? '').trim().toUpperCase();
+              if (runValue !== normalizedFilter) return;
+            }
+            const cells = manifestRowToCells(row);
+            const runDropText = `${(cells[0] && cells[0] !== '-') ? cells[0] : '-'} / ${(cells[1] && cells[1] !== '-') ? cells[1] : '-'}`;
+            const zoneVal = cells[2] ?? '-';
+            const soVal = cells[5] ?? '-';
+            const nameVal = cells[6] ?? '-';
+            const fpVal = cells[3] ?? '-';
+            const typeVal = cells[4] ?? '-';
+            html += `<tr id="${prefix}-row-${idx}" data-row-index="${idx}">`;
+            html += `<td>${escapeHTML(runDropText)}</td>`;
+            html += `<td>${escapeHTML(zoneVal || '-')}</td>`;
+            html += `<td>${escapeHTML(soVal || '-')}</td>`;
+            html += `<td>${escapeHTML(nameVal || '-')}</td>`;
+            html += `<td>${escapeHTML(fpVal || '-')}</td>`;
+            html += `<td>${escapeHTML(typeVal || '-')}</td>`;
+            html += `<td class="notes-cell">${buildNotesCellContent(idx, hasRunsheetUI)}</td>`;
+            html += '</tr>';
+          });
+          html += '</tbody></table></div>';
+          tableWrap.innerHTML = html;
+          updateRunFilterOptions();
+          return;
+        }
+        const headers = MANIFEST_HEADERS;
         let html = '<div class="table-scroll"><table><thead><tr>';
         headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
         html += '<th>Notes</th></tr></thead><tbody>';
@@ -932,7 +1503,8 @@
         if (!hasScheduleUI || !scheduleWrap) return;
         pruneNotes();
         if (!hasRunsheetUI) updateRunFilterOptions();
-        const headers = MANIFEST_HEADERS;
+        const condensed = isFinalModule && !isGlueline;
+        const headers = condensed ? ['Run / Drop','Zone','Sales Order','Name','FP','Type','Notes'] : MANIFEST_HEADERS;
         const entries = filteredSO ? scheduleEntries.filter(entry => entry.so === filteredSO) : scheduleEntries;
         if (!entries.length){
           const message = filteredSO
@@ -945,7 +1517,8 @@
         }
         let html = '<div class="table-scroll"><table><thead><tr>';
         headers.forEach(h=> html += `<th>${escapeHTML(h)}</th>`);
-        html += '<th>Notes</th></tr></thead><tbody>';
+        if (!condensed) html += '<th>Notes</th>';
+        html += '</tr></thead><tbody>';
         const normalizedFilter = runFilter.trim().toUpperCase();
         entries.forEach(entry=>{
           const idxs = rowLookup[entry.so] || [];
@@ -956,18 +1529,39 @@
             idxs.forEach(idx=>{
               const row = tableData[idx+1] || [];
               if (runFilter !== 'all' && String(row?.[0] ?? '').trim().toUpperCase() !== normalizedFilter) return;
-              const cells = manifestRowToCells(row);
-              const noteCell = buildNotesCellContent(idx, false);
-              html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + `<td class="notes-cell">${noteCell}</td></tr>`;
+              if (condensed){
+                const cells = manifestRowToCells(row);
+                const runDropText = `${(cells[0] && cells[0] !== '-') ? cells[0] : '-'} / ${(cells[1] && cells[1] !== '-') ? cells[1] : '-'}`;
+                const zoneVal = cells[2] ?? '-';
+                const soVal = cells[5] ?? '-';
+                const nameVal = cells[6] ?? '-';
+                const fpVal = cells[3] ?? '-';
+                const typeVal = cells[4] ?? '-';
+                html += `<tr><td>${escapeHTML(runDropText)}</td><td>${escapeHTML(zoneVal || '-')}</td><td>${escapeHTML(soVal || '-')}</td><td>${escapeHTML(nameVal || '-')}</td><td>${escapeHTML(fpVal || '-')}</td><td>${escapeHTML(typeVal || '-')}</td><td class="notes-cell">${buildNotesCellContent(idx, false)}</td></tr>`;
+              }else{
+                const cells = manifestRowToCells(row);
+                const noteCell = buildNotesCellContent(idx, false);
+                html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + `<td class="notes-cell">${noteCell}</td></tr>`;
+              }
             });
           }else{
             if (runFilter !== 'all' && String(runText ?? '').trim().toUpperCase() !== normalizedFilter) return;
-            const cells = new Array(headers.length).fill('-');
-            cells[0] = runText;
-            cells[1] = dropText;
-            cells[4] = entry.createdFrom || '-';
-            cells[5] = entry.so || '-';
-            html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + '<td class="notes-cell"><span class="note-placeholder">-</span></td></tr>';
+            if (condensed){
+              const runDropText = `${runText || '-'} / ${dropText || '-'}`;
+              const soVal = entry.so || '-';
+              const zoneVal = '-';
+              const nameVal = '-';
+              const fpVal = '-';
+              const typeVal = '-';
+              html += `<tr><td>${escapeHTML(runDropText)}</td><td>${escapeHTML(zoneVal)}</td><td>${escapeHTML(soVal)}</td><td>${escapeHTML(nameVal)}</td><td>${escapeHTML(fpVal)}</td><td>${escapeHTML(typeVal)}</td><td class="notes-cell"><span class="note-placeholder">-</span></td></tr>`;
+            }else{
+              const cells = new Array(headers.length).fill('-');
+              cells[0] = runText;
+              cells[1] = dropText;
+              cells[4] = entry.createdFrom || '-';
+              cells[5] = entry.so || '-';
+              html += '<tr>' + cells.map(cell=>`<td>${escapeHTML(cell)}</td>`).join('') + '<td class="notes-cell"><span class="note-placeholder">-</span></td></tr>';
+            }
           }
         });
         html += '</tbody></table></div>';
@@ -1089,6 +1683,10 @@
         renderScheduleTable();
         updateScanAvailability();
         updateSummaryDisplay();
+        if (isFinalModule){
+          resetSoLogDisplay();
+          resetRouteDisplay();
+        }
       }
 
       function refreshSchedule(options = {}){
@@ -1203,21 +1801,119 @@
           ? `<span class="note-text">${escapeHTML(noteText)}</span>`
           : '<span class="note-placeholder">No note</span>';
         let html = `<div class="note-display">${display}</div>`;
-        if (includeActions){
-          const btnLabel = hasNote ? 'Edit Note' : 'Add Note';
-          html += '<div class="note-actions">';
-          html += `<button type="button" class="note-btn" data-row="${idx}">${btnLabel}</button>`;
-          html += `<button type="button" class="manual-btn" data-row="${idx}">Manual Mark</button>`;
-          html += '</div>';
+      if (includeActions){
+        const btnLabel = hasNote ? 'Edit Note' : 'Add Note';
+        html += '<div class="note-actions">';
+        html += `<button type="button" class="note-btn" data-row="${idx}">${btnLabel}</button>`;
+        html += `<button type="button" class="manual-btn" data-row="${idx}">Manual Mark</button>`;
+        if (isFinalModule && !isGlueline){
+          html += `<button type="button" class="details-btn" data-row="${idx}">Details</button>`;
         }
-        return html;
+        html += '</div>';
+      }
+      return html;
+    }
+
+      function buildDetailContent(idx){
+        const row = tableData[idx + 1];
+        if (!row){
+          return '<div class="detail-empty">No additional details available.</div>';
+        }
+        const so = normSO(row[COL_SO]);
+        const expectedCodes = generated[so] || [];
+        const scannedSet = scanned[so] || new Set();
+        const scannedCodes = Array.from(scannedSet);
+        scannedCodes.sort((a, b)=> String(a).localeCompare(String(b), undefined, { numeric:true, sensitivity:'base' }));
+        const pendingCodes = expectedCodes.filter(code => !scannedSet.has(code));
+        pendingCodes.sort((a, b)=> String(a).localeCompare(String(b), undefined, { numeric:true, sensitivity:'base' }));
+        const cells = manifestRowToCells(row);
+        const phoneValue = row[9] ?? ''; // original column likely phone
+        const details = [
+          { label: 'Sales Order', value: cells[5] },
+          { label: 'Name', value: cells[6] },
+          { label: 'Address', value: cells[7] },
+          { label: 'Suburb', value: cells[8] },
+          { label: 'Postcode', value: cells[9] },
+          { label: 'Phone', value: phoneValue },
+          { label: 'FP', value: cells[3] },
+          { label: 'Type', value: cells[4] },
+          { label: 'CH', value: cells[10] },
+          { label: 'FL', value: cells[11] },
+          { label: 'Weight', value: cells[12] },
+          { label: 'Date', value: cells[13] }
+        ];
+        const items = details.map(detail=>{
+          const text = String(detail.value ?? '').trim();
+          const display = text ? escapeHTML(text) : '-';
+          return `<div class="detail-item"><span class="detail-label">${escapeHTML(detail.label)}</span><span class="detail-value">${display}</span></div>`;
+        }).join('');
+        const scannedList = scannedCodes.length
+          ? scannedCodes.map(code => `<span class="detail-pill detail-pill--scanned">${escapeHTML(code)}</span>`).join('')
+          : '<span class="detail-pill detail-pill--empty">No barcodes scanned yet.</span>';
+        let pendingList;
+        if (!expectedCodes.length){
+          pendingList = '<span class="detail-pill detail-pill--empty">No consignments expected.</span>';
+        }else if (!pendingCodes.length){
+          pendingList = '<span class="detail-pill detail-pill--empty">All consignments scanned.</span>';
+        }else{
+          pendingList = pendingCodes.map(code => `<span class="detail-pill detail-pill--pending">${escapeHTML(code)}</span>`).join('');
+        }
+        const scannedSummary = expectedCodes.length
+          ? `<span class="detail-summary">${scannedCodes.length}/${expectedCodes.length} scanned</span>`
+          : '';
+        const pendingSummary = expectedCodes.length && pendingCodes.length
+          ? `<span class="detail-summary detail-summary--pending">${pendingCodes.length} remaining</span>`
+          : '';
+        return `
+          <div class="detail-grid">${items}</div>
+          <div class="detail-section">
+            <div class="detail-section-header">
+              <span class="detail-section-title">Scanned Barcodes</span>
+              ${scannedSummary}
+            </div>
+            <div class="detail-list">${scannedList}</div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-section-header">
+              <span class="detail-section-title">Pending Barcodes</span>
+              ${pendingSummary}
+            </div>
+            <div class="detail-list">${pendingList}</div>
+          </div>
+        `;
       }
 
-      function updateRowNoteCell(idx){
-        const tr = document.getElementById(`${prefix}-row-${idx}`);
-        if (!tr) return;
-        const cell = tr.querySelector('.notes-cell');
-        if (!cell) return;
+      function toggleDetailsRow(idx){
+        if (!hasRunsheetUI) return;
+        const rowEl = document.getElementById(`${prefix}-row-${idx}`);
+        if (!rowEl) return;
+        const existing = rowEl.nextElementSibling;
+        if (existing && existing.classList.contains('details-row')){
+          existing.remove();
+          rowEl.classList.remove('details-open');
+          return;
+        }
+        const openRows = tableWrap ? tableWrap.querySelectorAll('.details-row') : null;
+        if (openRows){
+          openRows.forEach(row=>{
+            const prev = row.previousElementSibling;
+            if (prev) prev.classList.remove('details-open');
+            row.remove();
+          });
+        }
+        const detailRow = document.createElement('tr');
+        detailRow.className = 'details-row';
+        const colSpan = rowEl.children.length || 1;
+        detailRow.innerHTML = `<td colspan="${colSpan}">${buildDetailContent(idx)}</td>`;
+        rowEl.parentNode.insertBefore(detailRow, rowEl.nextSibling);
+        rowEl.classList.add('details-open');
+      }
+
+     function updateRowNoteCell(idx){
+       const tr = document.getElementById(`${prefix}-row-${idx}`);
+       if (!tr) return;
+       const cell = tr.querySelector('.notes-cell');
+       if (!cell) return;
         cell.innerHTML = buildNotesCellContent(idx, hasRunsheetUI);
       }
 
@@ -1269,6 +1965,9 @@
         lastScanInfo = { so, run, drop };
         updateSummaryDisplay();
         recordGluelineScan({ code: nextCode, so, run, drop });
+        if (remoteScansEnabled){
+          syncGluelineScanRemote({ code: nextCode, so, run, drop });
+        }
         save();
         focusScan();
         toast('Consignment marked manually.', 'success');
@@ -1285,6 +1984,13 @@
         if (manualBtn){
           const idx = Number(manualBtn.dataset.row);
           if (Number.isFinite(idx)) manualMarkRow(idx);
+          return;
+        }
+        const detailsBtn = event.target.closest('.details-btn');
+        if (detailsBtn){
+          const idx = Number(detailsBtn.dataset.row);
+          if (Number.isFinite(idx)) toggleDetailsRow(idx);
+          return;
         }
       }
 
@@ -1454,6 +2160,7 @@
           toast('This barcode has already been scanned.','info');
           resetScanInput();
           focusScan();
+          renderRunStatus();
           return false;
         }
         scanned[so].add(code);
@@ -1466,6 +2173,9 @@
         lastScanInfo = { so, run, drop };
         updateSummaryDisplay();
         recordGluelineScan({ code, so, run, drop });
+        if (remoteScansEnabled){
+          syncGluelineScanRemote({ code, so, run, drop });
+        }
         if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
         save();
         focusScan();
@@ -1474,6 +2184,7 @@
           : `Run ${run || '-'} / Drop ${drop || '-'} for ${so}`;
         toast(statusText,'success');
         resetScanInput();
+        renderRunStatus();
         return true;
       }
 
@@ -1483,15 +2194,47 @@
         }
       });
 
+      // Auto-enter: if a complete, valid barcode is present, submit immediately.
       scanEl.addEventListener('input', ()=>{
         if (scanEl.disabled) return;
-        const value = scanEl.value ? scanEl.value.trim() : '';
-        if (!value){
+        const valueRaw = scanEl.value ? scanEl.value.trim() : '';
+        if (!valueRaw){
           if (autoScanTimer){ clearTimeout(autoScanTimer); autoScanTimer=null; }
           return;
         }
-        if (value.length < MIN_BARCODE_LENGTH) return;
-        if (autoScanTimer) clearTimeout(autoScanTimer);
+        const value = valueRaw.toUpperCase();
+        if (value.length < MIN_BARCODE_LENGTH){
+          // Too short to be a full barcode; wait for more input.
+          return;
+        }
+
+        // Determine if this is a full, known barcode. If so, handle immediately.
+        let isKnownFull = false;
+        try{
+          const so = value.slice(0, -3);
+          const known = generated[so];
+          if (Array.isArray(known) && known.includes(value)){
+            isKnownFull = true;
+          }
+        }catch(_){}
+
+        if (autoScanTimer){
+          clearTimeout(autoScanTimer);
+          autoScanTimer = null;
+        }
+
+        if (isKnownFull){
+          // Immediate submit when a valid, full barcode is detected.
+          handleScan(value);
+          return;
+        }
+        if (AUTO_ENTER_ON_LENGTH && value.length === MIN_BARCODE_LENGTH){
+          // Auto-enter purely on reaching the expected length.
+          handleScan(value);
+          return;
+        }
+
+        // Fallback: debounce briefly and then attempt to handle whatever is present.
         autoScanTimer = setTimeout(()=>{
           autoScanTimer = null;
           handleScan(value);
@@ -1581,7 +2324,13 @@
         }
       });
 
-      loadInitialData({ fetchRemote: SUPABASE_ENABLED, isInitial: true }).catch(err => console.error(err));
+      loadInitialData({ fetchRemote: SUPABASE_ENABLED, isInitial: true })
+        .then(()=>{
+          if (remoteScansEnabled){
+            ensureGluelineRealtime().catch(err => console.error(err));
+          }
+        })
+        .catch(err => console.error(err));
 
       return { focus: () => { if(!scanEl.disabled) scanEl.focus(); } };
     }
@@ -1596,6 +2345,12 @@
       const targetsWrap = document.getElementById('admin_targets');
       const reportsMeta = document.getElementById('admin_reports_meta');
       const reportsTable= document.getElementById('admin_reports_table');
+      const supaStatus  = document.getElementById('admin_supabase_status');
+      const monitorSelect = document.getElementById('admin_monitor_select');
+      const manifestMeta = document.getElementById('admin_manifest_meta');
+      const monitorLogWrap = document.getElementById('admin_monitor_log');
+      let adminScanChannel = null;
+      let adminLogEntries = [];
       if (!uploadEl || !metaEl || !pushFinalEl || !pushAllEl || !previewWrap || !targetsWrap || !reportsMeta || !reportsTable){
         return { focus: () => {} };
       }
@@ -1638,7 +2393,7 @@
         updateMeta();
         renderTargets();
         renderReports().catch(err => console.error(err));
-        toast('Local cache cleared.', 'success');
+      // Admin monitor block removed due to corruption\n      toast('Local cache cleared.', 'success');
       }
 
       function renderTargets(){
@@ -1899,6 +2654,39 @@
       renderTargets();
       renderReports().catch(err => console.error(err));
 
+      async function checkSupabaseConnectivity(){
+        if (!supaStatus) return;
+        if (!SUPABASE_ENABLED){
+          supaStatus.textContent = 'Supabase: Not configured';
+          return;
+        }
+        const started = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        try{
+          let ok = false; let msg = '';
+          let res = await supabase.from('glueline_scans').select('id', { head:true, count:'exact' }).limit(1);
+          if (res && !res.error){ ok = true; }
+          else {
+            res = await supabase.from('depot_manifests').select('id', { head:true, count:'exact' }).limit(1);
+            if (res && !res.error){ ok = true; }
+            else { msg = res?.error?.message || 'Unknown error'; }
+          }
+          const ended = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const ms = Math.max(0, Math.round((ended - started)));
+          if (ok){
+            supaStatus.textContent = `Supabase: Connected (${ms} ms)`;
+          } else {
+            supaStatus.textContent = `Supabase: Error — ${msg}`;
+          }
+        }catch(err){
+          const ended = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const ms = Math.max(0, Math.round((ended - started)));
+          supaStatus.textContent = `Supabase: Error (${ms} ms)`;
+          console.error('Supabase connectivity check failed', err);
+        }
+      }
+
+      checkSupabaseConnectivity().catch(err => console.error(err));
+
       return {
         focus: () => uploadEl.focus()
       };
@@ -1906,8 +2694,12 @@
 
     function startApp(user){
       if (appStarted) return;
-      appStarted = true;
-      currentUser = user;
+    appStarted = true;
+    currentUser = user;
+
+    if (typeof document !== 'undefined'){
+      document.body.classList.toggle('glueline-mode', user.id === 'glueline');
+    }
 
       const headerTitle = document.querySelector('header h1');
       if (headerTitle){
@@ -2009,6 +2801,11 @@
     }
   }
 })();
+
+
+
+
+
 
 
 
