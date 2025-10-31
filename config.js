@@ -5,6 +5,6 @@
  * Keep this file out of version control (it is already ignored via .gitignore).
  */
 window.SUPABASE_CONFIG = {
-  url: 'https://iyzhghccbtroxrxunxsb.supabase.co',
-  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5emhnaGNjYnRyb3hyeHVueHNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MTAzMjMsImV4cCI6MjA3NzA4NjMyM30.BT4t4oc7prQZUgk3n5b0bYD_iFgTJ3MXsWUruKxT2Nw'
+url: 'https://hmkeahingzyoymxxgrjw.supabase.co',
+anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhta2VhaGluZ3p5b3lteHhncmp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NzA4ODEsImV4cCI6MjA3NzQ0Njg4MX0.qZl5U0wsAlpVfX4OFnusAsdANy0ewGsEEygW7JZVA7I'
 };
