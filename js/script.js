@@ -419,17 +419,58 @@
           return false;
         }
 
-        if (!verifyPassword || typeof verifyPassword !== 'function') {
-          console.error('verifyPassword function not available');
+        // Ensure we're using the correct function from AuthUtils
+        if (!window.AuthUtils || !window.AuthUtils.verifyPassword) {
+          console.error('AuthUtils.verifyPassword function not available');
+          console.error('Make sure auth-utils.js is loaded before script.js');
           return false;
         }
 
-        const isValid = await verifyPassword(
+        // Enable debug mode for password verification
+        window.DEBUG_PASSWORD_VERIFICATION = true;
+        
+        console.log('🔐 Verifying password for user:', userId);
+        console.log('Password entered:', '"' + password + '"', '(length:', password.length + ')');
+        console.log('Hash from DB length:', data.password_hash?.length || 0, '(expected: 128 for 64 bytes)');
+        console.log('Salt from DB length:', data.salt?.length || 0, '(expected: 64 for 32 bytes)');
+        console.log('Salt from DB (first 16 chars):', data.salt?.substring(0, 16) + '...');
+        console.log('Iterations:', data.iterations || 100000, '(expected: 100000)');
+        console.log('Hash from DB (first 32 chars):', data.password_hash?.substring(0, 32) + '...');
+        
+        // Validate data before verification
+        if (!data.password_hash || data.password_hash.length !== 128) {
+          console.error('❌ Invalid hash length! Expected 128 characters (64 bytes in hex)');
+          console.error('Current hash length:', data.password_hash?.length || 0);
+          console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
+          return false;
+        }
+        
+        if (!data.salt || data.salt.length !== 64) {
+          console.error('❌ Invalid salt length! Expected 64 characters (32 bytes in hex)');
+          console.error('Current salt length:', data.salt?.length || 0);
+          console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
+          return false;
+        }
+        
+        const isValid = await window.AuthUtils.verifyPassword(
           password,
           data.password_hash,
           data.salt,
           data.iterations || 100000
         );
+
+        if (!isValid) {
+          console.error('❌ Password verification failed!');
+          console.error('Possible causes:');
+          console.error('1. Password in database was hashed with different parameters');
+          console.error('2. Salt or hash format mismatch');
+          console.error('3. Wrong password entered');
+          console.error('');
+          console.error('📋 To fix: Regenerate passwords with: node database/generate_password_hash.js');
+          console.error('   Then update your database with the new hashes');
+        } else {
+          console.log('✅ Password verification successful!');
+        }
 
         return isValid;
       } catch (err) {
