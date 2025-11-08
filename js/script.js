@@ -1,4 +1,5 @@
 (() => {
+
   function init(){
     // Column positions from the manifest sheets
 
@@ -560,7 +561,22 @@
       function complete(user){
         currentUser = user;
         hideOverlay();
+      
+        // ✅ Ensure Admin tab becomes visible if role is admin
+        const adminTab = document.getElementById('tab-admin');
+        const adminPanel = document.getElementById('panel-admin');
+        if (user?.role === 'admin') {
+          if (adminTab) adminTab.style.display = 'inline-block';
+          if (adminPanel) adminPanel.style.display = 'block';
+          console.log('✅ Admin privileges detected – showing admin panel.');
+        } else {
+          if (adminTab) adminTab.style.display = 'none';
+          if (adminPanel) adminPanel.style.display = 'none';
+        }
+      
+        // Store login info
         localStorage.setItem(AUTH_KEY, JSON.stringify({ id:user.id, name:user.name, role:user.role }));
+      
         if (!resolved){
           resolved = true;
           onReady(user);
