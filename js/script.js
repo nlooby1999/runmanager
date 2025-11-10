@@ -35,6 +35,56 @@
       : null;
     const SUPABASE_ENABLED = !!supabase;
 
+    // Ensure the admin Supabase status updates immediately on load
+    // so it does not remain stuck at the initial "Checking Supabase..." label
+    ;(function initialSupabaseStatus(){
+      try{
+        const el = (typeof document !== 'undefined') ? document.getElementById('admin_supabase_status') : null;
+        if (!el) return;
+        if (!SUPABASE_ENABLED){
+          el.textContent = 'Supabase: Not configured';
+          return;
+        }
+        const now = (typeof performance !== 'undefined' && performance.now) ? ()=>performance.now() : ()=>Date.now();
+        const started = now();
+        const finish = (ok, msg)=>{
+          const ms = Math.max(0, Math.round(now() - started));
+          if (ok){
+            el.textContent = `Supabase: Connected (${ms} ms)`;
+          }else{
+            el.textContent = `Supabase: Error - ${msg || 'Unknown error'}`;
+          }
+        };
+        const timeoutMs = 7000;
+        let timeoutId = setTimeout(()=>{ try{ finish(false,'timeout'); }finally{ timeoutId = null; } }, timeoutMs);
+        const clearT = ()=>{ if (timeoutId){ clearTimeout(timeoutId); timeoutId = null; } };
+
+        // Try a lightweight head query against two known tables
+        supabase
+          .from('glueline_scans')
+          .select('id', { head:true, count:'exact' })
+          .limit(1)
+          .then(res => {
+            if (!res || res.error){
+              return supabase
+                .from('depot_manifests')
+                .select('id', { head:true, count:'exact' })
+                .limit(1)
+                .then(res2 => {
+                  clearT();
+                  if (res2 && !res2.error) finish(true);
+                  else finish(false, (res2?.error?.message || res?.error?.message || 'Unknown error'));
+                });
+            }
+            clearT();
+            finish(true);
+          })
+          .catch(err => { clearT(); console.error('Supabase connectivity quick check failed', err); finish(false, err?.message || 'Network error'); });
+      }catch(err){
+        console.error('Supabase connectivity quick check exception', err);
+      }
+    })();
+
     const logoutBtn = document.getElementById('auth_logout');
 
     const MANIFEST_HEADERS = ['Run','Drop','Zone','FP','Type','Sales Order','Name','Address','Suburb','Postcode','CH','FL','Weight','Date'];
@@ -2658,7 +2708,7 @@
       // Admin monitor block removed due to corruption\n      toast('Local cache cleared.', 'success');
       }
 
-      function renderTargets(){
+      async function renderTargets(){
         if (!targetsWrap) return;
         let select = document.getElementById('admin_target_select');
         if (!select){
@@ -2667,21 +2717,46 @@
           select.className = 'run-filter';
           targetsWrap.appendChild(select);
         }
+        // Show loading state while fetching
         select.innerHTML = '';
-        const depots = USERS.filter(u => u.role === 'depot');
-        if (depots.length){
-          depots.forEach(user=>{
-            const option = document.createElement('option');
-            option.value = user.id;
-            option.textContent = user.name;
-            select.appendChild(option);
-          });
-          select.selectedIndex = 0;
-          select.disabled = false;
-        }else{
+        const loading = document.createElement('option');
+        loading.value = '';
+        loading.textContent = 'Loading depots...';
+        loading.selected = true;
+        select.appendChild(loading);
+        select.disabled = true;
+
+        try{
+          let depots = [];
+          if (SUPABASE_ENABLED){
+            const users = await fetchUsersFromDatabase();
+            depots = (users || []).filter(u => (u.role === 'depot') || (!u.role && u.id !== 'admin' && u.id !== 'glueline'));
+          }
+
+          select.innerHTML = '';
+          if (depots.length){
+            depots.forEach(user=>{
+              const option = document.createElement('option');
+              option.value = user.id;
+              option.textContent = user.name || user.id;
+              select.appendChild(option);
+            });
+            select.selectedIndex = 0;
+            select.disabled = false;
+          }else{
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = SUPABASE_ENABLED ? 'No depots available' : 'No depots (Supabase not configured)';
+            placeholder.selected = true;
+            select.appendChild(placeholder);
+            select.disabled = true;
+          }
+        }catch(err){
+          console.error('Failed to load depots for admin targets', err);
+          select.innerHTML = '';
           const placeholder = document.createElement('option');
           placeholder.value = '';
-          placeholder.textContent = 'No depots available';
+          placeholder.textContent = 'Error loading depots';
           placeholder.selected = true;
           select.appendChild(placeholder);
           select.disabled = true;
@@ -2884,13 +2959,22 @@
       }
 
       pushFinalEl.addEventListener('click', pushFinal);
-      pushAllEl.addEventListener('click', ()=>{
-        const allDepots = USERS.filter(user => user.role === 'depot').map(user => user.id);
-        if (!allDepots.length){
-          showToast('No depots configured.', 'error');
-          return;
+      pushAllEl.addEventListener('click', async ()=>{
+        try{
+          let allDepots = [];
+          if (SUPABASE_ENABLED){
+            const users = await fetchUsersFromDatabase();
+            allDepots = (users || []).filter(u => (u.role === 'depot') || (!u.role && u.id !== 'admin' && u.id !== 'glueline')).map(u => u.id);
+          }
+          if (!allDepots.length){
+            showToast(SUPABASE_ENABLED ? 'No depots configured.' : 'No depots (Supabase not configured).', 'error');
+            return;
+          }
+          pushFinal(allDepots);
+        }catch(err){
+          console.error('Unable to determine depots for push-all', err);
+          showToast('Failed to load depots list.', 'error');
         }
-        pushFinal(allDepots);
       });
       if (clearCacheEl){
         const triggerClear = ()=>{
