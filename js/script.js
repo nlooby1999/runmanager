@@ -37,8 +37,8 @@
 
     // Handle Supabase email confirmation links (magic links) on redirect
     // Some environments may be configured to send clickable confirmation links
-    // instead of 6‑digit OTP codes. When the user clicks the link, Supabase
-    // redirects back with tokens in the URL (e.g. #access_token=…&type=signup).
+    // instead of 6-digit OTP codes. When the user clicks the link, Supabase
+    // redirects back with tokens in the URL (e.g. #access_token=�&type=signup).
     // We detect that case, finalize profile creation using any pending
     // registration info we stored, then sign out and return to the login screen.
     async function handleAuthRedirectIfPresent(){
@@ -62,7 +62,7 @@
           try{
             await supabase
               .from('profiles')
-              .upsert({ user_id: authUser.id, full_name: pending.fullName || authUser.email || 'User', username: pending.username || (authUser.email ? authUser.email.split('@')[0] : authUser.id), depot_id: pending.depotId || null }, { onConflict: 'user_id' });
+              .upsert({ user_id: authUser.id, full_name: pending.fullName || authUser.email || 'User', username: pending.username || (authUser.email ? authUser.email.split('@')[0] : authUser.id), depot_id: pending.depotId || null, approved: false }, { onConflict: 'user_id' });
           }catch(err){ console.error('Profile upsert (link) failed', err); }
         }
 
@@ -449,8 +449,8 @@
       // First check if table exists
       const tableExists = await checkTableExists();
       if (!tableExists) {
-        console.error('âŒ Users table does not exist!');
-        console.error('ðŸ“‹ To fix this:');
+        console.error('❌ Users table does not exist!');
+        console.error('📋 To fix this:');
         console.error('   1. Open your Supabase dashboard');
         console.error('   2. Go to SQL Editor');
         console.error('   3. Copy and run the contents of database/setup.sql');
@@ -490,11 +490,11 @@
           });
         }catch{}
 
-        console.log(`âœ… Successfully fetched ${data?.length || 0} users from database`);
+        console.log(`✅ Successfully fetched ${data?.length || 0} users from database`);
         if (data.length === 0) {
-          console.warn('âš ï¸ No users found in database!');
-          console.warn('ðŸ“‹ Run node database/generate_password_hash.js to generate INSERT statements');
-          console.warn('ðŸ“‹ Then run those INSERT statements in Supabase SQL Editor');
+          console.warn('⚠️ No users found in database!');
+          console.warn('📋 Run node database/generate_password_hash.js to generate INSERT statements');
+          console.warn('📋 Then run those INSERT statements in Supabase SQL Editor');
         }
         return data || [];
       } catch (err) {
@@ -538,7 +538,7 @@
         // Enable debug mode for password verification
         window.DEBUG_PASSWORD_VERIFICATION = true;
         
-        console.log('ðŸ” Verifying password for user:', userId);
+        console.log('🔐 Verifying password for user:', userId);
         console.log('Password entered:', '"' + password + '"', '(length:', password.length + ')');
         console.log('Hash from DB length:', data.password_hash?.length || 0, '(expected: 128 for 64 bytes)');
         console.log('Salt from DB length:', data.salt?.length || 0, '(expected: 64 for 32 bytes)');
@@ -548,14 +548,14 @@
         
         // Validate data before verification
         if (!data.password_hash || data.password_hash.length !== 128) {
-          console.error('âŒ Invalid hash length! Expected 128 characters (64 bytes in hex)');
+          console.error('❌ Invalid hash length! Expected 128 characters (64 bytes in hex)');
           console.error('Current hash length:', data.password_hash?.length || 0);
           console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
           return false;
         }
         
         if (!data.salt || data.salt.length !== 64) {
-          console.error('âŒ Invalid salt length! Expected 64 characters (32 bytes in hex)');
+          console.error('❌ Invalid salt length! Expected 64 characters (32 bytes in hex)');
           console.error('Current salt length:', data.salt?.length || 0);
           console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
           return false;
@@ -569,16 +569,16 @@
         );
 
         if (!isValid) {
-          console.error('âŒ Password verification failed!');
+          console.error('❌ Password verification failed!');
           console.error('Possible causes:');
           console.error('1. Password in database was hashed with different parameters');
           console.error('2. Salt or hash format mismatch');
           console.error('3. Wrong password entered');
           console.error('');
-          console.error('ðŸ“‹ To fix: Regenerate passwords with: node database/generate_password_hash.js');
+          console.error('📋 To fix: Regenerate passwords with: node database/generate_password_hash.js');
           console.error('   Then update your database with the new hashes');
         } else {
-          console.log('âœ… Password verification successful!');
+          console.log('✅ Password verification successful!');
         }
 
         return isValid;
@@ -611,7 +611,7 @@
               '<label>Email<input type="email" id="auth_email" placeholder="you@example.com" autocomplete="email" required></label>' +
               '<label>Password<input type="password" id="auth_pass" placeholder="Enter password" autocomplete="current-password" required></label>' +
               '<label>Depot (select Admin to manage)' +
-                '<select id="auth_depot"><option value="" disabled selected>Select depot or Admin…</option><option value="__admin__">Admin</option></select>' +
+                '<select id="auth_depot"><option value="" disabled selected>Select depot or Admin�</option><option value="__admin__">Admin</option></select>' +
               '</label>' +
               '<label id="auth_admin_code_row" style="display:none;">Admin code<input type="password" id="auth_admin_code" placeholder="Enter admin code" autocomplete="off"></label>' +
               '<div id="auth_error" class="auth-error" role="alert"></div>' +
@@ -676,7 +676,7 @@
 
       async function populateDepotsForRegistration(){
         if (!regDepot) return;
-        regDepot.innerHTML = '<option value="" disabled selected>Loading depotsâ€¦</option>';
+        regDepot.innerHTML = '<option value="" disabled selected>Loading depots…</option>';
         try{
           const users = await fetchUsersFromDatabase();
           const depots = (users || []).filter(u => u.role === 'depot');
@@ -741,6 +741,65 @@
         const regCodeInput = document.getElementById('reg_code');
         const regVerifyBtn = document.getElementById('reg_verify_code');
         const regCodeInfo = document.getElementById('reg_code_info');
+
+        // Make the code verification appear as a floating popover next to the auth card
+        function injectVerifyStyles(){
+          if (!document.getElementById('verify-popover-styles')){
+            const s = document.createElement('style');
+            s.id = 'verify-popover-styles';
+            s.textContent = '.verify-popover{position:fixed;z-index:10000;background:rgba(15,23,42,.98);color:#e2e8f0;border:1px solid rgba(148,163,184,.25);box-shadow:0 10px 30px rgba(0,0,0,.45);border-radius:10px;padding:16px;display:none;max-width:360px}';
+            document.head.appendChild(s);
+          }
+        }
+        function setupVerifyPopover(){
+          if (!regCodeSection || regCodeSection.dataset.popoverReady) return;
+          injectVerifyStyles();
+          regCodeSection.classList.add('verify-popover');
+          regCodeSection.setAttribute('role','dialog');
+          regCodeSection.dataset.popoverReady = '1';
+        }
+        function positionVerifyPopover(){
+          if (!regCodeSection) return;
+          const anchor = document.getElementById('auth_form');
+          if (!anchor) return;
+          const rect = anchor.getBoundingClientRect();
+          const margin = 16;
+          const vw = window.innerWidth || document.documentElement.clientWidth || 1024;
+          const vh = window.innerHeight || document.documentElement.clientHeight || 768;
+          const width = Math.min(360, vw - 32);
+          regCodeSection.style.maxWidth = width + 'px';
+          let left = rect.right + margin;
+          let top = Math.max(16, rect.top);
+          if (left + width > vw - 16){
+            left = rect.left - width - margin; // try left side
+          }
+          if (left < 16){
+            // Center below the card as fallback, but still visible
+            left = Math.max(16, (vw - width)/2);
+            top = Math.min(vh - 200, rect.bottom + margin);
+          }
+          const maxH = Math.max(200, vh - top - 16);
+          regCodeSection.style.maxHeight = maxH + 'px';
+          regCodeSection.style.overflowY = 'auto';
+          regCodeSection.style.left = left + 'px';
+          regCodeSection.style.top = top + 'px';
+          regCodeSection.style.right = 'auto';
+          regCodeSection.style.bottom = 'auto';
+        }
+        function showVerifyPopover(){
+          if (!regCodeSection) return;
+          setupVerifyPopover();
+          regCodeSection.style.display = 'block';
+          positionVerifyPopover();
+          window.addEventListener('resize', positionVerifyPopover);
+          window.addEventListener('scroll', positionVerifyPopover, true);
+        }
+        function hideVerifyPopover(){
+          if (!regCodeSection) return;
+          regCodeSection.style.display = 'none';
+          window.removeEventListener('resize', positionVerifyPopover);
+          window.removeEventListener('scroll', positionVerifyPopover, true);
+        }
         let pendingReg = null; // { email, username, fullName, depotId }
 
         regForm.addEventListener('submit', async (e)=>{
@@ -774,11 +833,14 @@
             const { data: signRes, error: signErr } = await supabase.auth.signUp({ email, password: pw, options: { data: { full_name: fullName, username, depot_id: depotId }, emailRedirectTo: redirectTo } });
             if (signErr){ setRegError(signErr.message || 'Failed to create account.'); regSubmit.disabled = false; return; }
             pendingReg = { email, username, fullName, depotId };
-            // Send OTP code to email (ensure Auth settings use Email OTP for signup)
+            // Send OTP code to email (OTP-only flow)
+            if (regCodeSection){ showVerifyPopover(); }
+            if (regCodeInfo){ regCodeInfo.textContent = 'We sent a code to your email. Enter it below to verify.'; }
+            try{ regCodeInput?.focus(); }catch{}
             const { error: otpErr } = await supabase.auth.resend({ type: 'signup', email });
-            if (otpErr){ setRegError(otpErr.message || 'Failed to send verification code.'); regSubmit.disabled = false; return; }
-            if (regCodeSection){ regCodeSection.style.display = ''; }
-            if (regCodeInfo){ regCodeInfo.textContent = 'We sent a 6-digit code to your email. Enter it below to verify.'; }
+            if (otpErr){ setRegError(otpErr.message || 'Failed to send verification code.'); }
+            if (regCodeSection){ showVerifyPopover(); }
+            if (regCodeInfo){ regCodeInfo.textContent = 'We sent a code to your email. Enter it below to verify.'; }
             try{ regCodeInput?.focus(); }catch{}
           }catch(err){
             console.error('Registration error', err);
@@ -791,15 +853,20 @@
           regVerifyBtn.addEventListener('click', async ()=>{
             setRegError('');
             if (!SUPABASE_ENABLED){ setRegError('Server unavailable.'); return; }
-            const token = (regCodeInput?.value || '').trim();
+            const tokenRaw = (regCodeInput?.value || '').trim();
+            const token = tokenRaw.replace(/\\D/g,''); // keep digits only
             const email = pendingReg?.email || (document.getElementById('reg_email')?.value || '').trim();
             if (!email){ setRegError('Missing email.'); return; }
-            if (!token || !/^[0-9]{6}$/.test(token)){ setRegError('Enter the 6-digit code.'); regCodeInput?.focus(); return; }
+            if (!token || token.length < 6 || token.length > 8){ setRegError('Enter the code from your email.'); regCodeInput?.focus(); return; }
             try{
               regVerifyBtn.disabled = true;
               // Verify the email OTP for signup
-              const { data, error } = await supabase.auth.verifyOtp({ email, token, type: 'signup' });
-              if (error || !data?.user){ setRegError(error?.message || 'Invalid or expired code.'); regVerifyBtn.disabled = false; return; }
+              let verifyRes = await supabase.auth.verifyOtp({ email, token, type: 'signup' });
+              if ((verifyRes.error || !verifyRes?.data?.user) && token.length === 8){
+                const t6 = token.slice(0,6);
+                verifyRes = await supabase.auth.verifyOtp({ email, token: t6, type: 'signup' });
+              }
+              if (verifyRes.error || !verifyRes?.data?.user){ setRegError(verifyRes?.error?.message || 'Invalid or expired code.'); regVerifyBtn.disabled = false; return; }
               // Upsert profile after verification
               // Persist depot selection from registration
               const depotIdFinal = pendingReg?.depotId || regDepot?.value?.trim() || null;
@@ -807,13 +874,13 @@
               const fullNameFinal = pendingReg?.fullName || (regFull?.value || '').trim();
               const { error: profErr } = await supabase
                 .from('profiles')
-                .upsert({ user_id: data.user.id, full_name: fullNameFinal, username: usernameFinal, depot_id: depotIdFinal }, { onConflict: 'user_id' });
+                .upsert({ user_id: verifyRes.data.user.id, full_name: fullNameFinal, username: usernameFinal, depot_id: depotIdFinal, approved: false }, { onConflict: 'user_id' });
               if (profErr){ console.error('Profile upsert failed', profErr); }
               try{ localStorage.removeItem('drm_pending_reg'); }catch{}
               alert('Email verified. Your account is pending admin approval.');
               // Sign out and return to login
               try{ await supabase.auth.signOut(); }catch{}
-              if (regCodeSection){ regCodeSection.style.display = 'none'; }
+              if (regCodeSection){ hideVerifyPopover(); }
               hideRegistration();
               showOverlay();
             }catch(err){
@@ -836,7 +903,7 @@
               const { error } = await supabase.auth.resend({ type: 'signup', email });
               if (error){ setRegError(error.message || 'Failed to resend code.'); }
               else { setRegError('A new code was sent. Check your email.'); }
-            }catch(err){ setRegError('Unable to resend code.'); }
+            }catch(_){ setRegError('Unable to resend code.'); }
             finally{ regResend.disabled = false; }
           });
         }
@@ -861,7 +928,7 @@
       }catch{}
     }
       
-        // âœ… Ensure Admin tab becomes visible if role is admin
+        // ✅ Ensure Admin tab becomes visible if role is admin
         const adminTab = document.getElementById('tab-admin');
         const adminPanel = document.getElementById('panel-admin');
         if (user?.role === 'admin') {
@@ -890,7 +957,7 @@
       try{
         if (!depotSelect && form && errorEl){
           const label = document.createElement('label');
-          label.innerHTML = 'Depot (select Admin to manage)\n<select id="auth_depot"><option value="" disabled selected>Select depot or Admin…</option><option value="__admin__">Admin</option></select>';
+          label.innerHTML = 'Depot (select Admin to manage)\n<select id="auth_depot"><option value="" disabled selected>Select depot or Admin�</option><option value="__admin__">Admin</option></select>';
           form.insertBefore(label, errorEl);
           depotSelect = label.querySelector('#auth_depot');
         }
@@ -906,7 +973,7 @@
       }catch{}
       async function populateLoginDepots(){
         if (!depotSelect) return;
-        depotSelect.innerHTML = '<option value="" disabled selected>Loading depots…</option>';
+        depotSelect.innerHTML = '<option value="" disabled selected>Loading depots�</option>';
         try{
           const { data, error } = await supabase.from('depots').select('id, name, role').order('name');
           let depots = [];
@@ -919,7 +986,7 @@
           placeholder.value = '';
           placeholder.disabled = true;
           placeholder.selected = true;
-          placeholder.textContent = 'Select depot or Admin…';
+          placeholder.textContent = 'Select depot or Admin�';
           depotSelect.appendChild(placeholder);
           const adminOpt = document.createElement('option');
           adminOpt.value = '__admin__'; adminOpt.textContent = 'Admin';
@@ -937,7 +1004,7 @@
           depots.forEach(d=>{ const opt=document.createElement('option'); opt.value=d.id; opt.textContent=d.name; depotSelect.appendChild(opt); });
         }catch{
           depotSelect.innerHTML = '';
-          const ph = document.createElement('option'); ph.value=''; ph.disabled=true; ph.selected=true; ph.textContent='Select depot or Admin…'; depotSelect.appendChild(ph);
+          const ph = document.createElement('option'); ph.value=''; ph.disabled=true; ph.selected=true; ph.textContent='Select depot or Admin�'; depotSelect.appendChild(ph);
           const onlyAdmin = document.createElement('option'); onlyAdmin.value='__admin__'; onlyAdmin.textContent='Admin'; depotSelect.appendChild(onlyAdmin);
         }
         const updateAdminCodeVisibility = ()=>{
@@ -985,6 +1052,16 @@
             return;
           }
           const authedUser = signIn.user;
+          // Enforce email verification before allowing login
+          try{
+            const emailConfirmed = Boolean(authedUser?.email_confirmed_at || authedUser?.confirmed_at);
+            if (!emailConfirmed){
+              setError('Please verify your email to continue. Check your inbox for the code or link.');
+              await supabase.auth.signOut().catch(()=>{});
+              loginBtn.disabled = false;
+              return;
+            }
+          }catch{}
           let profile = null;
           try{
             const { data: prof, error: profErr } = await supabase
@@ -1003,7 +1080,7 @@
               const username = meta.username || (authedUser.email ? authedUser.email.split('@')[0] : authedUser.id);
               await supabase
                 .from('profiles')
-                .upsert({ user_id: authedUser.id, full_name, username, depot_id: null }, { onConflict: 'user_id' });
+                .upsert({ user_id: authedUser.id, full_name, username, depot_id: null, approved: false }, { onConflict: 'user_id' });
               const { data: prof2 } = await supabase
                 .from('profiles')
                 .select('full_name, depot_id, role, approved')
@@ -1050,7 +1127,8 @@
             loginBtn.disabled = false;
             return;
           }
-          if (typeof profile.approved === 'boolean' && !profile.approved){
+          // Enforce admin approval for non-admin sessions. Treat null/undefined as not approved.
+          if (finalRole !== 'admin' && profile.approved !== true){
             setError('Your account is pending approval by an admin.');
             await supabase.auth.signOut();
             passInput.value='';
@@ -1456,7 +1534,7 @@
                 const val = sel.value || '';
                 if (!val){ alert('Please select a depot.'); return; }
                 try{ localStorage.setItem('drm_admin_depot_context', val); }catch{}
-                showToast('Depot selected. Reloading…','info');
+                showToast('Depot selected. Reloading�','info');
                 setTimeout(()=> location.reload(), 300);
               }); }
             })();
@@ -1626,7 +1704,7 @@
                 <span class="glueline-log-so">${escapeHTML(entry.so || '-')}</span>
                 <span class="glueline-log-time">${escapeHTML(timeText)}</span>
               </div>
-              <div class="glueline-log-meta">${escapeHTML(runText)} Â· ${escapeHTML(dropText)}</div>
+              <div class="glueline-log-meta">${escapeHTML(runText)} · ${escapeHTML(dropText)}</div>
               <div class="glueline-log-code">${escapeHTML(entry.code || '-')}</div>
             </div>
           `;
@@ -3124,6 +3202,15 @@
       const monitorSelect = document.getElementById('admin_monitor_select');
       const manifestMeta = document.getElementById('admin_manifest_meta');
       const monitorLogWrap = document.getElementById('admin_monitor_log');
+      // Admin-create-account elements
+      const createDepotSel   = document.getElementById('admin_create_depot');
+      const createEmail      = document.getElementById('admin_create_email');
+      const createUsername   = document.getElementById('admin_create_username');
+      const createFullname   = document.getElementById('admin_create_fullname');
+      const createPass       = document.getElementById('admin_create_pass');
+      const createConfirm    = document.getElementById('admin_create_confirm');
+      const createError      = document.getElementById('admin_create_error');
+      const createSubmit     = document.getElementById('admin_create_submit');
       let adminScanChannel = null;
       let adminLogEntries = [];
       // Only require the core admin controls; reports section is optional
@@ -3189,6 +3276,88 @@
         }catch{ return []; }
       }
 
+      function setCreateError(msg){
+        if (!createError) return;
+        createError.textContent = msg || '';
+        createError.style.display = msg ? 'block' : 'none';
+      }
+
+      async function populateCreateDepots(){
+        if (!createDepotSel) return;
+        createDepotSel.innerHTML = '<option value="" disabled selected>Loading depots...</option>';
+        try{
+          let depots = await fetchDepotsList();
+          if (!depots.length){
+            depots = [
+              { id:'glueline', name:'Glueline' },
+              { id:'albury', name:'Albury' },
+              { id:'sydney', name:'Sydney' },
+              { id:'brisbane', name:'Brisbane' },
+              { id:'melbourne', name:'Melbourne' },
+              { id:'perth', name:'Perth' }
+            ];
+          }
+          createDepotSel.innerHTML = '';
+          depots.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = d.name || d.id;
+            createDepotSel.appendChild(opt);
+          });
+        }catch(err){
+          console.error('Failed to load depots for admin create', err);
+          createDepotSel.innerHTML = '<option value="" disabled selected>Error loading depots</option>';
+        }
+      }
+
+      async function handleAdminCreate(){
+        setCreateError('');
+        if (!createSubmit) return;
+        if (!SUPABASE_ENABLED){ setCreateError('Supabase not configured.'); return; }
+        const depotId = (createDepotSel?.value || '').trim();
+        const email = (createEmail?.value || '').trim();
+        const username = (createUsername?.value || '').trim();
+        const fullName = (createFullname?.value || '').trim();
+        const pw = createPass?.value || '';
+        const pc = createConfirm?.value || '';
+        if (!depotId){ setCreateError('Select a depot.'); return; }
+        if (!email){ setCreateError('Enter an email.'); return; }
+        if (!username){ setCreateError('Enter a username.'); return; }
+        if (!/^[a-z0-9_\-.]{3,}$/i.test(username)){ setCreateError('Username must be 3+ letters/numbers.'); return; }
+        if (!fullName){ setCreateError('Enter full name.'); return; }
+        if (pw !== pc){ setCreateError('Passwords do not match.'); return; }
+        if (!passwordMeetsPolicy(pw)){ setCreateError('Password does not meet policy.'); return; }
+        try{
+          createSubmit.disabled = true;
+          try{
+            const { data: exists } = await supabase.from('profiles').select('username').eq('username', username).limit(1);
+            if (Array.isArray(exists) && exists.length){ setCreateError('Username already exists.'); createSubmit.disabled = false; return; }
+          }catch{}
+          const redirectTo = (typeof location !== 'undefined') ? (location.origin + location.pathname) : undefined;
+          const { data: signRes, error: signErr } = await supabase.auth.signUp({ email, password: pw, options: { data: { full_name: fullName, username, depot_id: depotId }, emailRedirectTo: redirectTo } });
+          if (signErr){ setCreateError(signErr.message || 'Failed to create account.'); createSubmit.disabled = false; return; }
+          try{
+            const newUserId = signRes?.user?.id;
+            if (newUserId){
+              await supabase
+                .from('profiles')
+                .upsert({ user_id: newUserId, full_name: fullName, username, depot_id: depotId, approved: true }, { onConflict: 'user_id' });
+            }
+          }catch(err){ console.warn('Profile upsert (admin create) failed', err); }
+          showToast('Account created. Verification email sent.', 'success');
+          if (createEmail) createEmail.value = '';
+          if (createUsername) createUsername.value = '';
+          if (createFullname) createFullname.value = '';
+          if (createPass) createPass.value = '';
+          if (createConfirm) createConfirm.value = '';
+        }catch(err){
+          console.error('Admin create account failed', err);
+          setCreateError('Unable to create account.');
+        }finally{
+          createSubmit.disabled = false;
+        }
+      }
+
       async function renderTargets(){
         if (!targetsWrap) return;
         targetsWrap.innerHTML = '';
@@ -3238,7 +3407,7 @@
 
       async function renderReports(){
         reportsLoading = true;
-        reportsMeta.textContent = 'Loading reportsâ€¦';
+        reportsMeta.textContent = 'Loading reports…';
         reportsTable.innerHTML = '<div class="table-scroll"></div>';
         try{
           const reports = await loadReports();
@@ -3304,7 +3473,7 @@
           const { data, error } = await supabase
             .from('profiles')
             .select('user_id, username, full_name, depot_id, role, approved')
-            .eq('approved', false)
+            .or('approved.is.null,approved.eq.false')
             .order('full_name');
           if (error) return [];
           return data || [];
@@ -3331,7 +3500,7 @@
 
       async function renderPendingUsers(){
         if (!usersMeta || !usersTable){ return; }
-        usersMeta.textContent = 'Loading pending usersâ€¦';
+        usersMeta.textContent = 'Loading pending users…';
         usersTable.innerHTML = '<div class="table-scroll"></div>';
         try{
           const pending = await fetchPendingUsers();
@@ -3529,8 +3698,13 @@
       });
 
       renderTargets();
+      populateCreateDepots().catch(()=>{});
       renderReports().catch(err => console.error(err));
       renderPendingUsers().catch(err => console.error(err));
+
+      if (createSubmit){
+        createSubmit.addEventListener('click', ()=>{ handleAdminCreate(); });
+      }
 
       async function checkSupabaseConnectivity(){
         if (!supaStatus) return;
@@ -3553,7 +3727,7 @@
           if (ok){
             supaStatus.textContent = `Supabase: Connected (${ms} ms)`;
           } else {
-            supaStatus.textContent = `Supabase: Error â€” ${msg}`;
+            supaStatus.textContent = `Supabase: Error — ${msg}`;
           }
         }catch(err){
           const ended = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -3707,6 +3881,8 @@
     }
   }
 })();
+
+
 
 
 
