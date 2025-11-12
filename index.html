@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Delivery Run Manager — Final Marking</title>
+  <title>Delivery Run Manager â€” Final Marking</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -71,7 +71,7 @@
         <div class="controls">
           <input type="file" id="admin_upload" class="file-input" accept=".xlsx,.xls" />
           <div class="file-meta" id="admin_meta">No shared manifest uploaded.</div>
-          <div class="file-meta" id="admin_supabase_status">Checking Supabase…</div>
+          <div class="file-meta" id="admin_supabase_status">Checking Supabaseâ€¦</div>
           <div class="run-filter-group">
             <label for="admin_target_select">Deliver to</label>
             <div class="admin-targets" id="admin_targets">
@@ -106,25 +106,83 @@
         </div>
         <div id="admin_reports_table" class="table-wrapper"><div class="table-scroll"></div></div>
       </section>
+      <section class="card" aria-label="User Approvals">
+        <div class="controls">
+          <div class="file-meta" id="admin_users_meta">Loading pending usersâ€¦</div>
+        </div>
+        <div id="admin_users_table" class="table-wrapper"><div class="table-scroll"></div></div>
+      </section>
     </section>
 
   </div>
 
   <div id="auth_overlay" class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth_title">
     <form class="auth-card" id="auth_form">
-      <h2 id="auth_title">Depot Login</h2>
+      <h2 id="auth_title">Sign in</h2>
       <label>
-        Depot
-        <select id="auth_user" required>
-          <option value="" disabled selected>Select depot</option>
-        </select>
+        Email
+        <input type="email" id="auth_email" placeholder="you@example.com" autocomplete="email" required>
       </label>
       <label>
         Password
-        <input type="password" id="auth_pass" placeholder="Enter password" autocomplete="off" required>
+        <input type="password" id="auth_pass" placeholder="Enter password" autocomplete="current-password" required>
+      </label><label id="auth_admin_code_row" style="display:none;">
+        Admin code
+        <input type="password" id="auth_admin_code" placeholder="Enter admin code" autocomplete="off">
       </label>
       <div id="auth_error" class="auth-error" role="alert"></div>
       <button id="auth_login" type="submit">Sign In</button>
+      <div class="auth-alt-row">
+        <button id="auth_register_link" type="button" class="link-btn">Create account</button>
+      </div>
+    </form>
+  </div>
+  <!-- Registration overlay -->
+  <div id="reg_overlay" class="auth-overlay" aria-hidden="true">
+    <form id="reg_form" class="auth-card" aria-label="Create account form">
+      <h2>Create account</h2><label>
+      <h2>Create account</h2>
+      <label>
+        Depot
+        <select id="reg_depot" required>
+          <option value="" disabled selected>Loading depots…</option>
+        </select>
+      </label>
+        Email
+        <input id="reg_email" type="email" placeholder="you@example.com" autocomplete="email" required>
+      </label>
+      <label>
+        Username
+        <input id="reg_username" type="text" placeholder="e.g. jdoe" autocomplete="off" required>
+      </label>
+      <label>
+        Full name
+        <input id="reg_fullname" type="text" placeholder="e.g. Jane Doe" autocomplete="name" required>
+      </label>
+      <label>
+        Password
+        <input id="reg_pass" type="password" placeholder="Minimum 8 characters" autocomplete="new-password" required>
+      </label>
+      <label>
+        Confirm password
+        <input id="reg_confirm" type="password" placeholder="Re-enter password" autocomplete="new-password" required>
+      </label>
+      <div id="reg_error" class="auth-error" role="alert"></div>
+      <div class="auth-actions">
+        <button id="reg_cancel" type="button">Cancel</button>
+        <button id="reg_submit" type="submit">Request approval</button>
+      </div>
+      <p class="auth-note">Password must be at least 8 characters and include a capital letter or a special character.</p>
+      <div id="reg_code_section" style="display:none; margin-top:8px;">
+        <label>
+          Email verification code
+          <input id="reg_code" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="Enter 6-digit code">
+        </label>
+        <div class="auth-actions" style="margin-top:6px;">
+          <button id="reg_verify_code" type="button">Verify Code</button>
+          <span id="reg_code_info" class="file-meta">We sent a 6-digit code to your email.</span>
+        </div>
+      </div>
     </form>
   </div>
 
@@ -136,8 +194,8 @@
     // Fallback Supabase config for environments (e.g. GitHub Pages) where config.js is absent.
     if (!window.SUPABASE_CONFIG) {
       window.SUPABASE_CONFIG = {
-        url: 'https://hmkeahingzyoymxxgrjw.supabase.co',
-        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhta2VhaGluZ3p5b3lteHhncmp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4NzA4ODEsImV4cCI6MjA3NzQ0Njg4MX0.qZl5U0wsAlpVfX4OFnusAsdANy0ewGsEEygW7JZVA7I'
+        url: 'https://ckpwtllnpruswgsqsbod.supabase.co',
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrcHd0bGxucHJ1c3dnc3FzYm9kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI4MDg1MjAsImV4cCI6MjA3ODM4NDUyMH0.Z3LV5QfR9OkkozBup_VRsfOrYaTDeHQAoTVEUyZXlG8'
       };
     }
   </script>
@@ -145,3 +203,4 @@
   <script src="js/script.js" defer></script>
 </body>
 </html>
+
