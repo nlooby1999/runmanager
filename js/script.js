@@ -231,7 +231,7 @@
         if (insertError) throw insertError;
       } else {
         // Local fallback: merge with any existing cached final for that user.
-        const base = suffix => `drm_${userId}_final_${suffix}`;
+        const base = suffix => `drm_final_${suffix}`;
         try{
           const existingRaw = localStorage.getItem(base('table_v2'));
           const existingFilesRaw = localStorage.getItem(base('files_meta_v2'));
@@ -376,7 +376,7 @@
       try {
         // Try a simple query to see if table exists
         const { error } = await supabase
-          .from('users')
+          .from('depots')
           .select('id')
           .limit(1);
         
@@ -400,8 +400,8 @@
       // First check if table exists
       const tableExists = await checkTableExists();
       if (!tableExists) {
-        console.error('❌ Users table does not exist!');
-        console.error('📋 To fix this:');
+        console.error('âŒ Users table does not exist!');
+        console.error('ðŸ“‹ To fix this:');
         console.error('   1. Open your Supabase dashboard');
         console.error('   2. Go to SQL Editor');
         console.error('   3. Copy and run the contents of database/setup.sql');
@@ -411,46 +411,55 @@
       
       try {
         console.log('Fetching users from Supabase...');
-        const { data, error } = await supabase
-          .from('users')
-          .select('id, name, role')
+        let data = [];
+        // Try to fetch extended columns if schema supports them
+        let res = await supabase
+          .from('depots')
+          .select('id, name, role, depot_id, approved')
           .order('name');
-        
-        if (error) {
-          console.error('Error fetching users:', error);
-          console.error('Error details:', {
-            message: error.message,
-            code: error.code,
-            details: error.details,
-            hint: error.hint
-          });
-          
-          // Provide helpful error messages
-          if (error.code === 'PGRST116') {
-            console.error('❌ Table "users" does not exist.');
-            console.error('📋 Run database/setup.sql in Supabase SQL Editor');
-          } else if (error.code === '42501') {
-            console.error('❌ Permission denied.');
-            console.error('📋 Check your Row Level Security policies.');
-            console.error('📋 Make sure "Allow anonymous read users" policy exists');
-          } else if (error.code === 'PGRST301') {
-            console.error('❌ RLS policy violation.');
-            console.error('📋 Check that anonymous users can SELECT from users table');
+        if (res.error) {
+          console.warn('Extended users select failed, falling back to minimal columns', res.error);
+          const fallback = await supabase
+            .from('depots')
+            .select('id, name, role')
+            .order('name');
+          if (fallback.error) {
+            console.error('Error fetching users:', fallback.error);
+            return [];
           }
-          return [];
+          data = fallback.data || [];
+        } else {
+          data = res.data || [];
         }
-        
-        console.log(`✅ Successfully fetched ${data?.length || 0} users from database`);
+
+        // Filter to only approved non-depot users when 'approved' present
+        try{
+          data = (data || []).filter(u => {
+            const isDepot = u.role === 'depot';
+            const hasApproval = (typeof u.approved === 'boolean') ? u.approved : true;
+            return isDepot || hasApproval;
+          });
+        }catch{}
+
+        console.log(`âœ… Successfully fetched ${data?.length || 0} users from database`);
         if (data.length === 0) {
-          console.warn('⚠️ No users found in database!');
-          console.warn('📋 Run node database/generate_password_hash.js to generate INSERT statements');
-          console.warn('📋 Then run those INSERT statements in Supabase SQL Editor');
+          console.warn('âš ï¸ No users found in database!');
+          console.warn('ðŸ“‹ Run node database/generate_password_hash.js to generate INSERT statements');
+          console.warn('ðŸ“‹ Then run those INSERT statements in Supabase SQL Editor');
         }
         return data || [];
       } catch (err) {
         console.error('Exception fetching users:', err);
         return [];
       }
+    }
+
+    function passwordMeetsPolicy(pw){
+      if (typeof pw !== 'string') return false;
+      if (pw.length < 8) return false;
+      const hasUpper = /[A-Z]/.test(pw);
+      const hasSpecial = /[^A-Za-z0-9]/.test(pw);
+      return hasUpper || hasSpecial;
     }
 
     async function verifyUserPassword(userId, password){
@@ -480,7 +489,7 @@
         // Enable debug mode for password verification
         window.DEBUG_PASSWORD_VERIFICATION = true;
         
-        console.log('🔐 Verifying password for user:', userId);
+        console.log('ðŸ” Verifying password for user:', userId);
         console.log('Password entered:', '"' + password + '"', '(length:', password.length + ')');
         console.log('Hash from DB length:', data.password_hash?.length || 0, '(expected: 128 for 64 bytes)');
         console.log('Salt from DB length:', data.salt?.length || 0, '(expected: 64 for 32 bytes)');
@@ -490,14 +499,14 @@
         
         // Validate data before verification
         if (!data.password_hash || data.password_hash.length !== 128) {
-          console.error('❌ Invalid hash length! Expected 128 characters (64 bytes in hex)');
+          console.error('âŒ Invalid hash length! Expected 128 characters (64 bytes in hex)');
           console.error('Current hash length:', data.password_hash?.length || 0);
           console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
           return false;
         }
         
         if (!data.salt || data.salt.length !== 64) {
-          console.error('❌ Invalid salt length! Expected 64 characters (32 bytes in hex)');
+          console.error('âŒ Invalid salt length! Expected 64 characters (32 bytes in hex)');
           console.error('Current salt length:', data.salt?.length || 0);
           console.error('Please regenerate password hashes using: node database/generate_password_hash.js');
           return false;
@@ -511,16 +520,16 @@
         );
 
         if (!isValid) {
-          console.error('❌ Password verification failed!');
+          console.error('âŒ Password verification failed!');
           console.error('Possible causes:');
           console.error('1. Password in database was hashed with different parameters');
           console.error('2. Salt or hash format mismatch');
           console.error('3. Wrong password entered');
           console.error('');
-          console.error('📋 To fix: Regenerate passwords with: node database/generate_password_hash.js');
+          console.error('ðŸ“‹ To fix: Regenerate passwords with: node database/generate_password_hash.js');
           console.error('   Then update your database with the new hashes');
         } else {
-          console.log('✅ Password verification successful!');
+          console.log('âœ… Password verification successful!');
         }
 
         return isValid;
@@ -532,61 +541,58 @@
 
     function setupAuth(onReady){
       let resolved = false;
-      const overlay = document.getElementById('auth_overlay');
-      const form = document.getElementById('auth_form');
-      const userSelect = document.getElementById('auth_user');
-      const passInput = document.getElementById('auth_pass');
-      const errorEl = document.getElementById('auth_error');
-      const loginBtn = document.getElementById('auth_login');
-      if (!overlay || !form || !userSelect || !passInput || !errorEl || !loginBtn){
-        resolved = true;
-        onReady({ id:'anonymous', name:'Anonymous User' });
-        return;
-      }
-
-      // Populate user dropdown from database
-      async function populateUsers(){
-        if (userSelect.dataset.populated) return;
-        
-        loginBtn.disabled = true;
-        userSelect.innerHTML = '<option value="" disabled selected>Loading users...</option>';
-        
-        try {
-          const users = await fetchUsersFromDatabase();
-          
-          if (users.length === 0) {
-            userSelect.innerHTML = '<option value="" disabled selected>No users available</option>';
-            setError('Unable to load users. Please check your database setup and ensure the users table exists with data.');
-            console.error('No users found. Make sure:');
-            console.error('1. The users table exists in Supabase');
-            console.error('2. Row Level Security policies allow anonymous read access');
-            console.error('3. Users have been inserted into the table');
-            loginBtn.disabled = false;
-            return;
-          }
-
-          userSelect.innerHTML = '<option value="" disabled selected>Select depot</option>';
-          users.forEach(user=>{
-            const option = document.createElement('option');
-            option.value = user.id;
-            option.textContent = user.name;
-            userSelect.appendChild(option);
-          });
-          userSelect.dataset.populated = 'true';
-          loginBtn.disabled = false;
-          console.log(`Loaded ${users.length} user(s) from database`);
-        } catch (err) {
-          console.error('Error populating users:', err);
-          userSelect.innerHTML = '<option value="" disabled selected>Error loading users</option>';
-          setError('Failed to load users. Check console for details.');
-          loginBtn.disabled = false;
+      let overlay = document.getElementById('auth_overlay');
+      let form = document.getElementById('auth_form');
+      let emailInput = document.getElementById('auth_email');
+      let passInput = document.getElementById('auth_pass');
+      let errorEl = document.getElementById('auth_error');
+      let loginBtn = document.getElementById('auth_login');
+      if (!overlay || !form || !emailInput || !passInput || !errorEl || !loginBtn){
+        // Build a minimal, working sign-in overlay dynamically
+        try{
+          const wrap = document.createElement('div');
+          wrap.id = 'auth_overlay';
+          wrap.className = 'auth-overlay show';
+          wrap.setAttribute('role','dialog');
+          wrap.setAttribute('aria-modal','true');
+          wrap.setAttribute('aria-hidden','false');
+          wrap.innerHTML = (
+            '<form class="auth-card" id="auth_form">' +
+              '<h2 id="auth_title">Sign in</h2>' +
+              '<label>Email<input type="email" id="auth_email" placeholder="you@example.com" autocomplete="email" required></label>' +
+              '<label>Password<input type="password" id="auth_pass" placeholder="Enter password" autocomplete="current-password" required></label>' +
+              '<label>Depot (select Admin to manage)' +
+                '<select id="auth_depot"><option value="" disabled selected>Select depot or Admin…</option><option value="__admin__">Admin</option></select>' +
+              '</label>' +
+              '<label id="auth_admin_code_row" style="display:none;">Admin code<input type="password" id="auth_admin_code" placeholder="Enter admin code" autocomplete="off"></label>' +
+              '<div id="auth_error" class="auth-error" role="alert"></div>' +
+              '<button id="auth_login" type="submit">Sign In</button>' +
+            '</form>'
+          );
+          document.body.appendChild(wrap);
+          overlay = document.getElementById('auth_overlay');
+          form = document.getElementById('auth_form');
+          emailInput = document.getElementById('auth_email');
+          passInput = document.getElementById('auth_pass');
+          errorEl = document.getElementById('auth_error');
+          loginBtn = document.getElementById('auth_login');
+          document.body.classList.add('auth-locked');
+        }catch(err){
+          console.error('Unable to build login overlay', err);
+          resolved = true;
+          onReady({ id:'anonymous', name:'Anonymous User' });
+          return;
         }
       }
+
+      // Supabase Auth is used; no user list needed
 
       function setError(msg){
         errorEl.textContent = msg || '';
         errorEl.style.display = msg ? 'block' : 'none';
       }
+
+      // Email OTP is only used during registration (Supabase email verification); not for login
 
       async function showOverlay(){
         document.body.classList.add('auth-locked');
@@ -595,9 +601,192 @@
         setError('');
         passInput.value='';
         loginBtn.disabled = false;
-        await populateUsers(); // Wait for users to load before focusing
-        requestAnimationFrame(()=> userSelect.focus());
+        try{ await populateLoginDepots(); }catch{}
+        requestAnimationFrame(()=> emailInput.focus());
         if (logoutBtn) logoutBtn.style.display = 'none';
+      }
+
+      // Registration flow wiring
+      const regOverlay = document.getElementById('reg_overlay');
+      const regForm = document.getElementById('reg_form');
+      const regDepot = document.getElementById('reg_depot');
+      const regUser = document.getElementById('reg_username');
+      const regFull = document.getElementById('reg_fullname');
+      const regPass = document.getElementById('reg_pass');
+      const regConfirm = document.getElementById('reg_confirm');
+      const regError = document.getElementById('reg_error');
+      const regSubmit = document.getElementById('reg_submit');
+      const regCancel = document.getElementById('reg_cancel');
+      const regLink = document.getElementById('auth_register_link');
+
+      function setRegError(msg){
+        if (!regError) return;
+        regError.textContent = msg || '';
+        regError.style.display = msg ? 'block' : 'none';
+      }
+
+      async function populateDepotsForRegistration(){
+        if (!regDepot) return;
+        regDepot.innerHTML = '<option value="" disabled selected>Loading depotsâ€¦</option>';
+        try{
+          const users = await fetchUsersFromDatabase();
+          const depots = (users || []).filter(u => u.role === 'depot');
+          regDepot.innerHTML = '';
+          if (depots.length){
+            depots.forEach(d => {
+              const opt = document.createElement('option');
+              opt.value = d.id;
+              opt.textContent = d.name || d.id;
+              regDepot.appendChild(opt);
+            });
+          } else {
+            // Fallback to a known static list so registration isn't blocked
+            const fallback = [
+              { id:'glueline', name:'Glueline' },
+              { id:'albury', name:'Albury' },
+              { id:'sydney', name:'Sydney' },
+              { id:'brisbane', name:'Brisbane' },
+              { id:'melbourne', name:'Melbourne' },
+              { id:'perth', name:'Perth' }
+            ];
+            fallback.forEach(d => {
+              const opt = document.createElement('option');
+              opt.value = d.id;
+              opt.textContent = d.name;
+              regDepot.appendChild(opt);
+            });
+          }
+        }catch(err){
+          console.error('Failed to load depots for registration', err);
+          regDepot.innerHTML = '<option value="" disabled selected>Error loading depots</option>';
+        }
+      }
+
+      function showRegistration(){
+        if (!SUPABASE_ENABLED){
+          setError('Registration requires server connection.');
+          return;
+        }
+        if (!regOverlay) return;
+        setRegError('');
+        const regEmailEl = document.getElementById('reg_email');
+        if (regEmailEl) regEmailEl.value = '';
+        regUser.value = '';
+        regFull.value = '';
+        regPass.value = '';
+        regConfirm.value = '';
+        populateDepotsForRegistration();
+        regOverlay.classList.add('show');
+        regOverlay.setAttribute('aria-hidden','false');
+      }
+      function hideRegistration(){
+        if (!regOverlay) return;
+        regOverlay.classList.remove('show');
+        regOverlay.setAttribute('aria-hidden','true');
+      }
+      if (regLink){ regLink.addEventListener('click', showRegistration); }
+      if (regCancel){ regCancel.addEventListener('click', hideRegistration); }
+      if (regForm){
+        // Registration code verification UI
+        const regCodeSection = document.getElementById('reg_code_section');
+        const regCodeInput = document.getElementById('reg_code');
+        const regVerifyBtn = document.getElementById('reg_verify_code');
+        const regCodeInfo = document.getElementById('reg_code_info');
+        let pendingReg = null; // { email, username, fullName, depotId }
+
+        regForm.addEventListener('submit', async (e)=>{
+          e.preventDefault();
+          setRegError('');
+          if (!SUPABASE_ENABLED){ setRegError('Registration unavailable.'); return; }
+          const depotId = regDepot?.value?.trim();
+          const email = (document.getElementById('reg_email')?.value || '').trim();
+          const username = (regUser?.value || '').trim();
+          const fullName = (regFull?.value || '').trim();
+          const pw = regPass?.value || '';
+          const pc = regConfirm?.value || '';
+          if (!depotId){ setRegError('Select a depot.'); return; }
+          if (!email){ setRegError('Enter your email.'); return; }
+          if (!username){ setRegError('Enter a username.'); return; }
+          if (!/^[a-z0-9_\-.]{3,}$/i.test(username)){ setRegError('Username must be 3+ letters/numbers.'); return; }
+          if (!fullName){ setRegError('Enter your full name.'); return; }
+          if (pw !== pc){ setRegError('Passwords do not match.'); return; }
+          if (!passwordMeetsPolicy(pw)){ setRegError('Password does not meet policy.'); return; }
+          try{
+            regSubmit.disabled = true;
+            // Ensure username not taken in profiles
+            try{
+              const { data: exists } = await supabase.from('profiles').select('username').eq('username', username).limit(1);
+              if (Array.isArray(exists) && exists.length){ setRegError('Username already exists.'); regSubmit.disabled = false; return; }
+            }catch{}
+            // Create auth user via Supabase Auth (not confirmed yet)
+            const { data: signRes, error: signErr } = await supabase.auth.signUp({ email, password: pw, options: { data: { full_name: fullName, username, depot_id: depotId } } });
+            if (signErr){ setRegError(signErr.message || 'Failed to create account.'); regSubmit.disabled = false; return; }
+            pendingReg = { email, username, fullName, depotId };
+            // Send OTP code to email (ensure Auth settings use Email OTP for signup)
+            const { error: otpErr } = await supabase.auth.resend({ type: 'signup', email });
+            if (otpErr){ setRegError(otpErr.message || 'Failed to send verification code.'); regSubmit.disabled = false; return; }
+            if (regCodeSection){ regCodeSection.style.display = ''; }
+            if (regCodeInfo){ regCodeInfo.textContent = 'We sent a 6-digit code to your email. Enter it below to verify.'; }
+            try{ regCodeInput?.focus(); }catch{}
+          }catch(err){
+            console.error('Registration error', err);
+            setRegError('Unexpected error. Please try again.');
+          }finally{
+            regSubmit.disabled = false;
+          }
+        });
+        if (regVerifyBtn){
+          regVerifyBtn.addEventListener('click', async ()=>{
+            setRegError('');
+            if (!SUPABASE_ENABLED){ setRegError('Server unavailable.'); return; }
+            const token = (regCodeInput?.value || '').trim();
+            const email = pendingReg?.email || (document.getElementById('reg_email')?.value || '').trim();
+            if (!email){ setRegError('Missing email.'); return; }
+            if (!token || !/^[0-9]{6}$/.test(token)){ setRegError('Enter the 6-digit code.'); regCodeInput?.focus(); return; }
+            try{
+              regVerifyBtn.disabled = true;
+              // Verify the email OTP for signup
+              const { data, error } = await supabase.auth.verifyOtp({ email, token, type: 'signup' });
+              if (error || !data?.user){ setRegError(error?.message || 'Invalid or expired code.'); regVerifyBtn.disabled = false; return; }
+              // Upsert profile after verification
+              // Persist depot selection from registration
+              const depotIdFinal = pendingReg?.depotId || regDepot?.value?.trim() || null;
+              const usernameFinal = pendingReg?.username || (regUser?.value || '').trim();
+              const fullNameFinal = pendingReg?.fullName || (regFull?.value || '').trim();
+              const { error: profErr } = await supabase
+                .from('profiles')
+                .upsert({ user_id: data.user.id, full_name: fullNameFinal, username: usernameFinal, depot_id: depotIdFinal }, { onConflict: 'user_id' });
+              if (profErr){ console.error('Profile upsert failed', profErr); }
+              alert('Email verified. Your account is pending admin approval.');
+              // Sign out and return to login
+              try{ await supabase.auth.signOut(); }catch{}
+              if (regCodeSection){ regCodeSection.style.display = 'none'; }
+              hideRegistration();
+              showOverlay();
+            }catch(err){
+              console.error('Verify code error', err);
+              setRegError('Unable to verify code.');
+            }finally{
+              regVerifyBtn.disabled = false;
+            }
+          });
+        }
+        // Optional: support "Resend code" button if present
+        const regResend = document.getElementById('reg_resend_code');
+        if (regResend){
+          regResend.addEventListener('click', async ()=>{
+            setRegError('');
+            const email = pendingReg?.email || (document.getElementById('reg_email')?.value || '').trim();
+            if (!email){ setRegError('Enter your email first.'); return; }
+            try{
+              regResend.disabled = true;
+              const { error } = await supabase.auth.resend({ type: 'signup', email });
+              if (error){ setRegError(error.message || 'Failed to resend code.'); }
+              else { setRegError('A new code was sent. Check your email.'); }
+            }catch(err){ setRegError('Unable to resend code.'); }
+            finally{ regResend.disabled = false; }
+          });
+        }
       }
 
       function hideOverlay(){
@@ -610,126 +799,252 @@
 
       function complete(user){
         currentUser = user;
-        hideOverlay();
+        // Hide the sign-in overlay immediately on successful auth
+        try{ hideOverlay(); }catch{}
+    if (currentUser?.role === 'admin'){
+      try{
+        const savedCtx = localStorage.getItem('drm_admin_depot_context');
+        if (savedCtx){ currentUser.depot_id = savedCtx; }
+      }catch{}
+    }
       
-        // ✅ Ensure Admin tab becomes visible if role is admin
+        // âœ… Ensure Admin tab becomes visible if role is admin
         const adminTab = document.getElementById('tab-admin');
         const adminPanel = document.getElementById('panel-admin');
         if (user?.role === 'admin') {
           if (adminTab) adminTab.style.display = 'inline-block';
           if (adminPanel) adminPanel.style.display = 'block';
-          console.log('✅ Admin privileges detected – showing admin panel.');
+          // Use plain ASCII to avoid mojibake in some consoles
+          console.log('Admin privileges detected - showing admin panel.');
         } else {
           if (adminTab) adminTab.style.display = 'none';
           if (adminPanel) adminPanel.style.display = 'none';
         }
       
-        // Store login info
-        localStorage.setItem(AUTH_KEY, JSON.stringify({ id:user.id, name:user.name, role:user.role }));
-      
+        // Do not persist user identity locally; keep user data only in Supabase
+
         if (!resolved){
           resolved = true;
           onReady(user);
         }
       }
 
+      // Admin-mode toggle
+      let depotSelect = document.getElementById('auth_depot');
+      let adminCodeRow = document.getElementById('auth_admin_code_row');
+      let adminCodeInput = document.getElementById('auth_admin_code');
+      // If the HTML does not include the depot/admin selector or admin code row, create them dynamically
+      try{
+        if (!depotSelect && form && errorEl){
+          const label = document.createElement('label');
+          label.innerHTML = 'Depot (select Admin to manage)\n<select id="auth_depot"><option value="" disabled selected>Select depot or Admin…</option><option value="__admin__">Admin</option></select>';
+          form.insertBefore(label, errorEl);
+          depotSelect = label.querySelector('#auth_depot');
+        }
+        if (!adminCodeRow && form && errorEl){
+          const label = document.createElement('label');
+          label.id = 'auth_admin_code_row';
+          label.style.display = 'none';
+          label.innerHTML = 'Admin code\n<input type="password" id="auth_admin_code" placeholder="Enter admin code" autocomplete="off">';
+          form.insertBefore(label, errorEl);
+          adminCodeRow = label;
+          adminCodeInput = label.querySelector('#auth_admin_code');
+        }
+      }catch{}
+      async function populateLoginDepots(){
+        if (!depotSelect) return;
+        depotSelect.innerHTML = '<option value="" disabled selected>Loading depots…</option>';
+        try{
+          const { data, error } = await supabase.from('depots').select('id, name, role').order('name');
+          let depots = [];
+          if (!error && Array.isArray(data)){
+            depots = data.filter(d => d.role === 'depot').map(d => ({ id:d.id, name:d.name || d.id }));
+          }
+          depotSelect.innerHTML = '';
+          // Placeholder first so user explicitly chooses
+          const placeholder = document.createElement('option');
+          placeholder.value = '';
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          placeholder.textContent = 'Select depot or Admin…';
+          depotSelect.appendChild(placeholder);
+          const adminOpt = document.createElement('option');
+          adminOpt.value = '__admin__'; adminOpt.textContent = 'Admin';
+          depotSelect.appendChild(adminOpt);
+          if (!depots.length){
+            depots = [
+              { id:'glueline', name:'Glueline' },
+              { id:'albury', name:'Albury' },
+              { id:'sydney', name:'Sydney' },
+              { id:'brisbane', name:'Brisbane' },
+              { id:'melbourne', name:'Melbourne' },
+              { id:'perth', name:'Perth' }
+            ];
+          }
+          depots.forEach(d=>{ const opt=document.createElement('option'); opt.value=d.id; opt.textContent=d.name; depotSelect.appendChild(opt); });
+        }catch{
+          depotSelect.innerHTML = '';
+          const ph = document.createElement('option'); ph.value=''; ph.disabled=true; ph.selected=true; ph.textContent='Select depot or Admin…'; depotSelect.appendChild(ph);
+          const onlyAdmin = document.createElement('option'); onlyAdmin.value='__admin__'; onlyAdmin.textContent='Admin'; depotSelect.appendChild(onlyAdmin);
+        }
+        const updateAdminCodeVisibility = ()=>{
+          const isAdminSel = depotSelect.value === '__admin__';
+          if (adminCodeRow){ adminCodeRow.style.display = isAdminSel ? '' : 'none'; }
+          if (isAdminSel) requestAnimationFrame(()=> adminCodeInput?.focus());
+        };
+        depotSelect.addEventListener('change', updateAdminCodeVisibility);
+        // Initialize visibility in case Admin is preselected (e.g., only Admin option present)
+        updateAdminCodeVisibility();
+      }
+      populateLoginDepots();
+
+      async function elevateToAdmin(adminCode){
+        try{
+          const { data, error } = await supabase.rpc('admin_check_and_elevate', { p_code: adminCode });
+          if (error){ throw error; }
+          return { ok: !!data, error: null };
+        }catch(err){
+          const msg = err?.message || err?.hint || err?.details || 'RPC failed';
+          console.error('Admin elevate failed:', err);
+          return { ok:false, error: msg };
+        }
+      }
+
       form.addEventListener('submit', async (event)=>{
         event.preventDefault();
-        const selected = userSelect.value;
+        const email = (emailInput.value || '').trim();
         const password = passInput.value.trim();
-        if (!selected){ setError('Select your depot.'); userSelect.focus(); return; }
+        if (!email){ setError('Enter your email.'); emailInput.focus(); return; }
+        const selectedDepot = depotSelect ? depotSelect.value : '';
+        if (!selectedDepot){ setError('Select a depot (or Admin).'); depotSelect?.focus(); return; }
+        if (!SUPABASE_ENABLED){ setError('Server unavailable. Check Supabase config.'); return; }
         
         loginBtn.disabled = true;
-        setError('Verifying...');
+        setError('Signing in...');
 
         try {
-          // First fetch user info to get role
-          const { data: userData, error: userError } = await supabase
-            .from('users')
-            .select('id, name, role')
-            .eq('id', selected)
-            .single();
+          const { data: signIn, error: signErr } = await supabase.auth.signInWithPassword({ email, password });
+          if (signErr || !signIn?.user){
+            setError(signErr?.message || 'Invalid credentials.');
+            passInput.value='';
+            passInput.focus();
+            loginBtn.disabled = false;
+            return;
+          }
+          const authedUser = signIn.user;
+          let profile = null;
+          try{
+            const { data: prof, error: profErr } = await supabase
+              .from('profiles')
+              .select('full_name, depot_id, role, approved')
+              .eq('user_id', authedUser.id)
+              .single();
+            if (!profErr && prof) profile = prof;
+          }catch{}
 
-          if (userError || !userData) {
-            setError('User not found.');
+          // If profile is missing, create a minimal one so login can proceed
+          if (!profile){
+            try{
+              const meta = authedUser.user_metadata || {};
+              const full_name = meta.full_name || authedUser.email || 'User';
+              const username = meta.username || (authedUser.email ? authedUser.email.split('@')[0] : authedUser.id);
+              await supabase
+                .from('profiles')
+                .upsert({ user_id: authedUser.id, full_name, username, depot_id: null }, { onConflict: 'user_id' });
+              const { data: prof2 } = await supabase
+                .from('profiles')
+                .select('full_name, depot_id, role, approved')
+                .eq('user_id', authedUser.id)
+                .single();
+              if (prof2) profile = prof2;
+            }catch(err){
+              console.warn('Unable to create default profile; continuing with fallback', err);
+            }
+          }
+          if (!profile){
+            // Fallback local profile to avoid blocking sign-in
+            profile = { full_name: authedUser.email || 'User', depot_id: null, role: 'user', approved: true };
+          }
+          let finalRole = profile?.role || 'user';
+          if (selectedDepot === '__admin__'){
+            const code = (adminCodeInput?.value || '').trim();
+            if (!code){ setError('Enter the admin code.'); adminCodeInput?.focus(); loginBtn.disabled = false; return; }
+            const result = await elevateToAdmin(code);
+            if (!result.ok){ setError(result.error || 'Invalid admin code.'); loginBtn.disabled = false; return; }
+            const { data: prof2 } = await supabase
+              .from('profiles')
+              .select('full_name, depot_id, role, approved')
+              .eq('user_id', authedUser.id)
+              .single();
+            if (prof2){ profile = prof2; finalRole = prof2.role || 'admin'; }
+          } else {
+            // Act as selected depot for this session
+            finalRole = 'depot';
+            profile.depot_id = selectedDepot;
+            try{ localStorage.setItem('drm_admin_depot_context', selectedDepot); }catch{}
+            // Persist depot selection so RLS (current_depot_id) matches
+            try{
+              await supabase
+                .from('profiles')
+                .update({ depot_id: selectedDepot })
+                .eq('user_id', authedUser.id);
+            }catch(e){ console.warn('Unable to persist depot selection', e); }
+          }
+
+          if (!profile){
+            setError('No profile found. Contact admin.');
+            await supabase.auth.signOut();
+            loginBtn.disabled = false;
+            return;
+          }
+          if (typeof profile.approved === 'boolean' && !profile.approved){
+            setError('Your account is pending approval by an admin.');
+            await supabase.auth.signOut();
             passInput.value='';
             passInput.focus();
             loginBtn.disabled = false;
             return;
           }
 
-          // Verify password
-          const isValid = await verifyUserPassword(selected, password);
-          
-          if (!isValid) {
-            setError('Incorrect password.');
-            passInput.value='';
-            passInput.focus();
-            loginBtn.disabled = false;
-            return;
-          }
-
-          const user = { 
-            id: userData.id, 
-            name: userData.name || userData.id, 
-            role: userData.role || (userData.id === 'admin' ? 'admin' : 'depot') 
-          };
-          complete(user);
+          const appUser = { id: authedUser.id, name: profile.full_name || authedUser.email, role: finalRole, depot_id: profile.depot_id || null };
+          console.log('Signing in as', appUser.role, 'depot_id=', appUser.depot_id || '(none)');
+          complete(appUser);
         } catch (err) {
           console.error('Authentication error:', err);
           setError('Authentication error. Please try again.');
           passInput.value='';
           passInput.focus();
           loginBtn.disabled = false;
+        } finally {
+          // Safety: if still on the login overlay, re-enable button
+          const stillVisible = overlay?.classList?.contains('show');
+          if (stillVisible && !resolved){ loginBtn.disabled = false; }
         }
       });
 
       passInput.addEventListener('input', ()=> setError(''));
-      userSelect.addEventListener('change', ()=> setError(''));
+      emailInput.addEventListener('input', ()=> setError(''));
 
-      const stored = localStorage.getItem(AUTH_KEY);
-      if (stored){
+      // If a Supabase Auth session exists, use it; else show login
+      (async ()=>{
         try{
-          const parsed = JSON.parse(stored);
-          if (parsed?.id){
-            // Pre-populate users dropdown while checking stored auth
-            populateUsers();
-            
-            // Verify stored user still exists in database
-            fetchUsersFromDatabase().then(users => {
-              const userInDb = users.find(u => u.id === parsed.id);
-              if (userInDb) {
-                const user = { 
-                  id: userInDb.id, 
-                  name: userInDb.name || userInDb.id, 
-                  role: userInDb.role || (userInDb.id === 'admin' ? 'admin' : 'depot') 
-                };
-                complete(user);
-              } else {
-                // User not found in database, clear storage and show login
-                console.warn('Stored user not found in database, showing login');
-                localStorage.removeItem(AUTH_KEY);
-                showOverlay();
-              }
-            }).catch((err) => {
-              console.error('Error verifying stored user:', err);
-              // If we can't fetch users, still try to use stored user (graceful degradation)
-              const user = { 
-                id: parsed.id, 
-                name: parsed.name || parsed.id, 
-                role: parsed.role || (parsed.id === 'admin' ? 'admin' : 'depot') 
-              };
-              complete(user);
-            });
-            return;
+          const { data } = await supabase.auth.getUser();
+          const authUser = data?.user || null;
+          if (authUser){
+            const { data: prof } = await supabase
+              .from('profiles')
+              .select('full_name, depot_id, role, approved')
+              .eq('user_id', authUser.id)
+              .single();
+            if (prof && (typeof prof.approved !== 'boolean' || prof.approved)){
+              complete({ id: authUser.id, name: prof.full_name || authUser.email, role: prof.role || 'user', depot_id: prof.depot_id || null });
+              return;
+            }
+            await supabase.auth.signOut().catch(()=>{});
           }
-        }catch{
-          localStorage.removeItem(AUTH_KEY);
-        }
-      }
-
-      // No stored auth, show overlay and load users
-      showOverlay();
+        }catch{}
+        showOverlay();
+      })();
     }
 
     function MarkingModule(prefix){
@@ -746,9 +1061,10 @@
       const summaryEl      = document.getElementById(prefix + '_scanned_summary');
       const filterClearEl  = document.getElementById(prefix + '_filter_clear');
       const isGlueline     = currentUser?.id === 'glueline';
-      const isDepotUser    = currentUser?.role === 'depot';
-      const currentDepotId = currentUser?.id || 'unknown';
+      const isDepotUser    = (currentUser?.role === 'depot') || !!currentUser?.depot_id;
+      const currentDepotId = currentUser?.depot_id || currentUser?.id || 'unknown';
       const remoteScansEnabled = Boolean(SUPABASE_ENABLED && isDepotUser);
+      const displayOnly    = (currentUser?.role === 'admin') && !currentUser?.depot_id;
       const isFinalModule  = prefix === 'final';
       const topBar         = document.querySelector('.top-bar');
       const gluelineLogWrap = isGlueline ? document.createElement('div') : null;
@@ -774,7 +1090,8 @@
       let gluelineBeforeUnloadBound = false;
       const filtersDisabled = isFinalModule;
       const runFilterEl    = filtersDisabled ? null : document.getElementById(prefix + '_run_filter');
-      const canUpload      = currentUser?.role === 'admin';
+      // Uploads are restricted to the Admin tab only; Final Marking never uploads
+      const canUpload      = false;
 
       const hasRunsheetUI = Boolean(fileEl && fileMeta && tableWrap);
       const hasScheduleUI = Boolean(scheduleFileEl && scheduleMeta && scheduleWrap);
@@ -791,8 +1108,8 @@
       }
 
       const baseKey = (suffix)=>{
-        const user = currentUser?.id || 'anon';
-        return `drm_${user}_${prefix}_${suffix}`;
+        // Do not include username in local storage keys
+        return `drm_${prefix}_${suffix}`;
       };
       const KEYS = {
         table:   baseKey('table_v2'),
@@ -1044,6 +1361,63 @@
             parentCard.appendChild(gluelineLogWrap);
           }
         }
+      }else if (displayOnly){
+        // Admin viewing Final Marking: show runs only (no scanning, no uploads)
+        if (tableWrap) tableWrap.style.display = '';
+        // Admin viewing Final Marking: show runs only (no scanning, no uploads)
+        if (tableWrap) tableWrap.style.display = '';
+        if (scheduleWrap) scheduleWrap.style.display = '';
+        if (fileMeta) fileMeta.style.display = '';
+        if (scheduleMeta) scheduleMeta.style.display = '';
+        if (fileEl){ fileEl.disabled = true; fileEl.style.display = 'none'; }
+        if (scheduleFileEl){ scheduleFileEl.disabled = true; scheduleFileEl.style.display = 'none'; }
+        if (exportEl){ exportEl.style.display = 'none'; exportEl.tabIndex = -1; exportEl.setAttribute('aria-hidden','true'); }
+        if (exportTopEl){ exportTopEl.style.display = 'none'; exportTopEl.tabIndex = -1; exportTopEl.setAttribute('aria-hidden','true'); }
+        if (clearEl){ clearEl.style.display = 'none'; clearEl.setAttribute('aria-hidden','true'); clearEl.tabIndex = -1; }
+        if (scanEl){ scanEl.disabled = true; scanEl.style.display = 'none'; }
+        // Render depot selection UI inside Final Marking for admins
+        if (tableWrap){
+          const host = tableWrap.querySelector('.table-scroll');
+          if (host){
+            host.innerHTML = '<div style=\'padding:1rem;\'><label style=\'display:block;margin-bottom:8px;\'>Select depot to view as</label><select id=\'admin_final_depot\' class=\'run-filter\'></select><button id=\'admin_final_depot_apply\' style=\'margin-left:8px;\'>Enter</button><div class=\'file-meta\' style=\'margin-top:8px;\'>Select a depot to view and scan as that depot.</div></div>';
+            (async ()=>{
+              const sel = document.getElementById('admin_final_depot');
+              try{
+                let depots = [];
+                const { data } = await supabase.from('depots').select('id, name, role').order('name');
+                depots = (data || []).map(d => ({ id:d.id, name:d.name || d.id }));
+                if (!depots.length){
+                  depots = [
+                    { id:'glueline', name:'Glueline' },
+                    { id:'albury', name:'Albury' },
+                    { id:'sydney', name:'Sydney' },
+                    { id:'brisbane', name:'Brisbane' },
+                    { id:'melbourne', name:'Melbourne' },
+                    { id:'perth', name:'Perth' }
+                  ];
+                }
+                depots.forEach(d=>{ const opt=document.createElement('option'); opt.value=d.id; opt.textContent=d.name; sel.appendChild(opt); });
+              }catch(err){ console.warn('Unable to load depots for final selection', err); }
+              const btn = document.getElementById('admin_final_depot_apply');
+              if (btn){ btn.addEventListener('click', ()=>{
+                const val = sel.value || '';
+                if (!val){ alert('Please select a depot.'); return; }
+                try{ localStorage.setItem('drm_admin_depot_context', val); }catch{}
+                showToast('Depot selected. Reloading…','info');
+                setTimeout(()=> location.reload(), 300);
+              }); }
+            })();
+          }
+        }
+        if (scheduleWrap) scheduleWrap.style.display = '';
+        if (fileMeta) fileMeta.style.display = '';
+        if (scheduleMeta) scheduleMeta.style.display = '';
+        if (fileEl){ fileEl.disabled = true; fileEl.style.display = 'none'; }
+        if (scheduleFileEl){ scheduleFileEl.disabled = true; scheduleFileEl.style.display = 'none'; }
+        if (exportEl){ exportEl.style.display = 'none'; exportEl.tabIndex = -1; exportEl.setAttribute('aria-hidden','true'); }
+        if (exportTopEl){ exportTopEl.style.display = 'none'; exportTopEl.tabIndex = -1; exportTopEl.setAttribute('aria-hidden','true'); }
+        if (clearEl){ clearEl.style.display = 'none'; clearEl.setAttribute('aria-hidden','true'); clearEl.tabIndex = -1; }
+        if (scanEl){ scanEl.disabled = true; scanEl.style.display = 'none'; }
       }else{
         if (tableWrap) tableWrap.style.display = '';
         if (scheduleWrap) scheduleWrap.style.display = '';
@@ -1199,7 +1573,7 @@
                 <span class="glueline-log-so">${escapeHTML(entry.so || '-')}</span>
                 <span class="glueline-log-time">${escapeHTML(timeText)}</span>
               </div>
-              <div class="glueline-log-meta">${escapeHTML(runText)} · ${escapeHTML(dropText)}</div>
+              <div class="glueline-log-meta">${escapeHTML(runText)} Â· ${escapeHTML(dropText)}</div>
               <div class="glueline-log-code">${escapeHTML(entry.code || '-')}</div>
             </div>
           `;
@@ -1468,6 +1842,7 @@
       }
 
       function updateScanAvailability(){
+        if (displayOnly){ if (scanEl) scanEl.disabled = true; return; }
         if (!scanEl) return;
         const hasGenerated = Object.values(generated).some(arr => Array.isArray(arr) && arr.length > 0);
         const shouldEnable = hasGenerated;
@@ -1914,7 +2289,8 @@
       }
 
       async function loadInitialData({ fetchRemote = SUPABASE_ENABLED, isInitial = false, preserveLocal = true } = {}){
-        const depotId = currentUser?.id || 'unknown';
+        // Use depot_id when present; fallback to user id
+        const depotId = currentUser?.depot_id || currentUser?.id || 'unknown';
         tableData = [];
         generated = {};
         rowLookup = {};
@@ -1929,7 +2305,7 @@
         loadFromLocalStorage();
         if (!hasRunsheetUI){
           try{
-            const finalKey = suffix => `drm_${currentUser?.id || 'anon'}_final_${suffix}`;
+            const finalKey = suffix => `drm_final_${suffix}`;
             const finalNotesRaw = localStorage.getItem(finalKey('notes_v1'));
             if (finalNotesRaw) notes = JSON.parse(finalNotesRaw) || notes;
           }catch{}
@@ -2565,14 +2941,46 @@
         });
       }
 
-      clearEl.addEventListener('click', ()=>{
-        const promptMsg = 'This will remove all loaded runsheets, scans, and notes for Final Marking. Are you sure?';
+      clearEl.addEventListener('click', async ()=>{
+        const promptMsg = 'This will remove ALL runsheets, scans, and notes for this depot. Continue?';
         if(!confirm(promptMsg)) return;
+
+        // Attempt remote cleanup first when possible
+        let remoteOk = true;
+        if (SUPABASE_ENABLED) {
+          try{
+            const depotId = currentDepotId;
+            // Delete scan logs for this depot
+            const { error: scanDelErr } = await supabase
+              .from('glueline_scans')
+              .delete()
+              .eq('depot_id', depotId);
+            if (scanDelErr) {
+              console.error('Failed clearing remote scans for depot', depotId, scanDelErr);
+              remoteOk = false;
+            }
+            // Delete final manifests for this depot
+            const { error: manDelErr } = await supabase
+              .from('depot_manifests')
+              .delete()
+              .eq('depot_id', depotId)
+              .eq('kind', 'final');
+            if (manDelErr) {
+              console.error('Failed clearing remote manifests for depot', depotId, manDelErr);
+              remoteOk = false;
+            }
+          }catch(err){
+            console.error('Remote clear failed', err);
+            remoteOk = false;
+          }
+        }
+
+        // Always clear local state
         reset(true);
         scanEl.value='';
         if (hasRunsheetUI && fileEl) fileEl.value='';
         if (hasScheduleUI && scheduleFileEl) scheduleFileEl.value='';
-        toast('Cleared.','success');
+        toast(remoteOk ? 'Depot cleared.' : 'Local cleared. Remote clear may have failed.', remoteOk ? 'success' : 'error');
       });
 
       if (hasScheduleUI && !hasRunsheetUI && typeof window !== 'undefined'){
@@ -2618,12 +3026,12 @@
 
         const report = {
           id: generateClientUuid(),
-          depotId: currentUser?.id || 'unknown',
+          depotId: currentDepotId || 'unknown',
           depotName: currentUser?.name || 'Unknown Depot',
           kind: 'final',
           created: new Date().toISOString(),
           rows: dataRows.length,
-          filename: `final_${currentUser?.id || 'unknown'}_${Date.now()}.csv`,
+          filename: `final_${currentDepotId || 'unknown'}_${Date.now()}.csv`,
           csv: encodeCSV(csv)
         };
         try{
@@ -2657,13 +3065,16 @@
       const targetsWrap = document.getElementById('admin_targets');
       const reportsMeta = document.getElementById('admin_reports_meta');
       const reportsTable= document.getElementById('admin_reports_table');
+      const usersMeta   = document.getElementById('admin_users_meta');
+      const usersTable  = document.getElementById('admin_users_table');
       const supaStatus  = document.getElementById('admin_supabase_status');
       const monitorSelect = document.getElementById('admin_monitor_select');
       const manifestMeta = document.getElementById('admin_manifest_meta');
       const monitorLogWrap = document.getElementById('admin_monitor_log');
       let adminScanChannel = null;
       let adminLogEntries = [];
-      if (!uploadEl || !metaEl || !pushFinalEl || !pushAllEl || !previewWrap || !targetsWrap || !reportsMeta || !reportsTable){
+      // Only require the core admin controls; reports section is optional
+      if (!uploadEl || !metaEl || !pushFinalEl || !pushAllEl || !previewWrap || !targetsWrap){
         return { focus: () => {} };
       }
 
@@ -2672,6 +3083,11 @@
       let reportsCache = [];
       let reportsLoading = false;
       const toast = showToast;
+
+      // This page is for admin tasks only; hide controls not needed here
+      if (clearCacheEl){
+        clearCacheEl.style.display = 'none';
+      }
 
       function renderPreview(){
         if (!tableData.length){
@@ -2708,70 +3124,68 @@
       // Admin monitor block removed due to corruption\n      toast('Local cache cleared.', 'success');
       }
 
+      async function fetchDepotsList(){
+        if (!SUPABASE_ENABLED) return [];
+        try{
+          const { data, error } = await supabase
+            .from('depots')
+            .select('id, name, role')
+            .order('name');
+          if (error) return [];
+          return (data || []).map(r => ({ id: r.id, name: r.name || r.id }));
+        }catch{ return []; }
+      }
+
       async function renderTargets(){
         if (!targetsWrap) return;
-        let select = document.getElementById('admin_target_select');
-        if (!select){
-          select = document.createElement('select');
-          select.id = 'admin_target_select';
-          select.className = 'run-filter';
-          targetsWrap.appendChild(select);
-        }
-        // Show loading state while fetching
-        select.innerHTML = '';
-        const loading = document.createElement('option');
-        loading.value = '';
-        loading.textContent = 'Loading depots...';
-        loading.selected = true;
-        select.appendChild(loading);
-        select.disabled = true;
-
+        targetsWrap.innerHTML = '';
+        const wrap = document.createElement('div');
+        wrap.className = 'depot-checkbox-list';
+        wrap.textContent = 'Loading depots...';
+        targetsWrap.appendChild(wrap);
         try{
-          let depots = [];
-          if (SUPABASE_ENABLED){
-            const users = await fetchUsersFromDatabase();
-            depots = (users || []).filter(u => (u.role === 'depot') || (!u.role && u.id !== 'admin' && u.id !== 'glueline'));
+          let depots = await fetchDepotsList();
+          if (!depots.length){
+            // fallback to static list if none in DB
+            depots = [
+              { id:'glueline', name:'Glueline' },
+              { id:'albury', name:'Albury' },
+              { id:'sydney', name:'Sydney' },
+              { id:'brisbane', name:'Brisbane' },
+              { id:'melbourne', name:'Melbourne' },
+              { id:'perth', name:'Perth' }
+            ];
           }
-
-          select.innerHTML = '';
-          if (depots.length){
-            depots.forEach(user=>{
-              const option = document.createElement('option');
-              option.value = user.id;
-              option.textContent = user.name || user.id;
-              select.appendChild(option);
-            });
-            select.selectedIndex = 0;
-            select.disabled = false;
-          }else{
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = SUPABASE_ENABLED ? 'No depots available' : 'No depots (Supabase not configured)';
-            placeholder.selected = true;
-            select.appendChild(placeholder);
-            select.disabled = true;
-          }
+          wrap.innerHTML = '';
+          depots.forEach(d => {
+            const label = document.createElement('label');
+            label.style.display = 'inline-flex';
+            label.style.alignItems = 'center';
+            label.style.gap = '6px';
+            label.style.marginRight = '10px';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'depot-checkbox';
+            cb.value = d.id;
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(d.name || d.id));
+            wrap.appendChild(label);
+          });
         }catch(err){
-          console.error('Failed to load depots for admin targets', err);
-          select.innerHTML = '';
-          const placeholder = document.createElement('option');
-          placeholder.value = '';
-          placeholder.textContent = 'Error loading depots';
-          placeholder.selected = true;
-          select.appendChild(placeholder);
-          select.disabled = true;
+          console.error('Failed to render depots list', err);
+          wrap.textContent = 'Unable to load depots.';
         }
       }
 
       function selectedDepotIds(){
-        const select = document.getElementById('admin_target_select');
-        if (!select) return [];
-        return select.value ? [select.value] : [];
+        const boxes = targetsWrap ? targetsWrap.querySelectorAll('.depot-checkbox:checked') : null;
+        if (!boxes || !boxes.length) return [];
+        return Array.from(boxes).map(b => b.value);
       }
 
       async function renderReports(){
         reportsLoading = true;
-        reportsMeta.textContent = 'Loading reports…';
+        reportsMeta.textContent = 'Loading reportsâ€¦';
         reportsTable.innerHTML = '<div class="table-scroll"></div>';
         try{
           const reports = await loadReports();
@@ -2828,6 +3242,69 @@
           reportsTable.innerHTML = '<div class="table-scroll"><div style="padding:1rem;text-align:center;">Error loading reports.</div></div>';
         }finally{
           reportsLoading = false;
+        }
+      }
+
+      async function fetchPendingUsers(){
+        if (!SUPABASE_ENABLED) return [];
+        try{
+          const { data, error } = await supabase
+            .from('profiles')
+            .select('user_id, username, full_name, depot_id, role, approved')
+            .eq('approved', false)
+            .order('full_name');
+          if (error) return [];
+          return data || [];
+        }catch(err){
+          console.error('Failed to fetch pending users', err);
+          return [];
+        }
+      }
+
+      async function approveUser(userId){
+        if (!SUPABASE_ENABLED || !userId) return false;
+        try{
+          const { error } = await supabase
+            .from('profiles')
+            .update({ approved: true })
+            .eq('user_id', userId);
+          if (error){ throw error; }
+          return true;
+        }catch(err){
+          console.error('Approve user failed', err);
+          return false;
+        }
+      }
+
+      async function renderPendingUsers(){
+        if (!usersMeta || !usersTable){ return; }
+        usersMeta.textContent = 'Loading pending usersâ€¦';
+        usersTable.innerHTML = '<div class="table-scroll"></div>';
+        try{
+          const pending = await fetchPendingUsers();
+          if (!pending.length){
+            usersMeta.textContent = 'No pending users.';
+            usersTable.innerHTML = '<div class="table-scroll"></div>';
+            return;
+          }
+          usersMeta.textContent = `${pending.length} pending user(s).`;
+          let html = '<div class="table-scroll"><table><thead><tr>'+
+                     '<th>Username</th><th>Full name</th><th>Depot</th><th>Actions</th>'+
+                     '</tr></thead><tbody>';
+          pending.forEach(u => {
+            html += `<tr data-user-id="${u.user_id}">`+
+                    `<td>${escapeHTML(u.username || '')}</td>`+
+                    `<td>${escapeHTML(u.full_name || '')}</td>`+
+                    `<td>${escapeHTML(u.depot_id || '')}</td>`+
+                    `<td><button type="button" class="approve-user" data-user="${u.user_id}">Approve</button></td>`+
+                    `</tr>`;
+          });
+          html += '</tbody></table></div>';
+          usersTable.innerHTML = html;
+        }catch(err){
+          console.error('Render pending users failed', err);
+          usersMeta.textContent = 'Unable to load pending users.';
+          usersTable.innerHTML = '<div class="table-scroll"><div style="padding:1rem;text-align:center;">Error loading users.</div></div>';
         }
       }
 
@@ -2961,11 +3438,8 @@
       pushFinalEl.addEventListener('click', pushFinal);
       pushAllEl.addEventListener('click', async ()=>{
         try{
-          let allDepots = [];
-          if (SUPABASE_ENABLED){
-            const users = await fetchUsersFromDatabase();
-            allDepots = (users || []).filter(u => (u.role === 'depot') || (!u.role && u.id !== 'admin' && u.id !== 'glueline')).map(u => u.id);
-          }
+          const list = await fetchDepotsList();
+          let allDepots = (list || []).map(d => d.id);
           if (!allDepots.length){
             showToast(SUPABASE_ENABLED ? 'No depots configured.' : 'No depots (Supabase not configured).', 'error');
             return;
@@ -2976,29 +3450,34 @@
           showToast('Failed to load depots list.', 'error');
         }
       });
-      if (clearCacheEl){
-        const triggerClear = ()=>{
-          const confirmed = confirm('Remove all locally cached manifests, scans, schedule data, and reports on this device?');
-          if (!confirmed) return;
-          clearLocalCache();
-        };
-        clearCacheEl.addEventListener('click', triggerClear);
-        clearCacheEl.addEventListener('keydown', event=>{
-          if (event.key === 'Enter' || event.key === ' '){
-            event.preventDefault();
-            triggerClear();
-          }
-        });
-      }
+      // Clear Local Cache button is not needed on Admin page
       reportsTable.addEventListener('click', event=>{
         handleReportAction(event).catch(err => console.error(err));
       });
+      if (usersTable){
+        usersTable.addEventListener('click', async (event)=>{
+          const btn = event.target.closest('button.approve-user');
+          if (!btn) return;
+          const id = btn.dataset.user;
+          if (!id) return;
+          btn.disabled = true;
+          const ok = await approveUser(id);
+          if (ok){
+            showToast(`Approved ${id}.`, 'success');
+            renderPendingUsers().catch(err => console.error(err));
+          } else {
+            showToast('Failed to approve user.', 'error');
+          }
+          btn.disabled = false;
+        });
+      }
       window.addEventListener('drm:reports-updated', ()=>{
         renderReports().catch(err => console.error(err));
       });
 
       renderTargets();
       renderReports().catch(err => console.error(err));
+      renderPendingUsers().catch(err => console.error(err));
 
       async function checkSupabaseConnectivity(){
         if (!supaStatus) return;
@@ -3021,7 +3500,7 @@
           if (ok){
             supaStatus.textContent = `Supabase: Connected (${ms} ms)`;
           } else {
-            supaStatus.textContent = `Supabase: Error — ${msg}`;
+            supaStatus.textContent = `Supabase: Error â€” ${msg}`;
           }
         }catch(err){
           const ended = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -3063,43 +3542,59 @@
         logoutBtn.style.display = 'inline-flex';
         logoutBtn.textContent = `Logout (${user.name})`;
         if (!logoutBtn.dataset.bound){
-          logoutBtn.addEventListener('click', ()=>{
-            localStorage.removeItem(AUTH_KEY);
-            location.reload();
-          });
+          logoutBtn.addEventListener('click', async ()=>{ try{ await supabase?.auth?.signOut?.(); }catch{}; location.reload(); });
           logoutBtn.dataset.bound = 'true';
         }
       }
-
       const finalTabEl = document.getElementById('tab-final');
       const finalPanelEl = document.getElementById('panel-final');
       const adminTabBtn = document.getElementById('tab-admin');
       const adminPanelEl = document.getElementById('panel-admin');
-
+      // Safety: ensure overlay is gone and panels are not force-hidden
+      try{
+        document.body.classList.remove('auth-locked');
+        const ov = document.getElementById('auth_overlay');
+        if (ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden','true'); }
+        if (finalPanelEl) finalPanelEl.style.display = finalPanelEl.style.display || '';
+        if (adminPanelEl) adminPanelEl.style.display = adminPanelEl.style.display || '';
+      }catch{}
       const isAdmin = user.role === 'admin';
       let finalModule = null;
       let adminModule = null;
-      if (!isAdmin){
-        finalModule = MarkingModule('final');
-        if (finalTabEl) finalTabEl.style.display = '';
-        if (finalPanelEl){
-          finalPanelEl.style.display = '';
-          finalPanelEl.classList.add('active');
-        }
-      }else{
+
+      // Admin users: Admin tab only (no Final Marking)
+      // Depot users: Final Marking only (no Admin tab)
+      if (isAdmin){
+        // Hide Final Marking tab/panel for admins
         if (finalTabEl) finalTabEl.style.display = 'none';
         if (finalPanelEl) finalPanelEl.style.display = 'none';
-      }
-
-      if (isAdmin){
+        // Show and initialize Admin
         if (adminTabBtn) adminTabBtn.style.display = '';
         adminModule = AdminModule();
-      }else if (adminTabBtn){
-        adminTabBtn.style.display = 'none';
+      } else {
+        // Initialize Final Marking for depot users
+        finalModule = MarkingModule('final');
+        if (finalTabEl) finalTabEl.style.display = '';
+        // Hide Admin tab for non-admins
+        if (adminTabBtn) adminTabBtn.style.display = 'none';
         adminPanelEl?.classList.remove('active');
       }
 
       let activeTab = isAdmin ? 'admin' : 'final';
+      // Ensure the chosen panel is visibly toggled correctly on first load
+      try{
+        if (activeTab === 'admin'){
+          adminTabBtn?.setAttribute('aria-selected','true');
+          adminPanelEl?.classList.add('active');
+          if (adminPanelEl) adminPanelEl.style.display = '';
+          if (finalPanelEl){ finalPanelEl.classList.remove('active'); finalPanelEl.style.display = 'none'; }
+        }else{
+          finalTabEl?.setAttribute('aria-selected','true');
+          finalPanelEl?.classList.add('active');
+          if (finalPanelEl) finalPanelEl.style.display = '';
+          if (adminPanelEl){ adminPanelEl.classList.remove('active'); adminPanelEl.style.display = 'none'; }
+        }
+      }catch{}
 
       function activate(which){
         activeTab = which;
@@ -3116,7 +3611,11 @@
         Object.entries(tabs).forEach(([,tab])=> tab?.setAttribute('aria-selected','false'));
         Object.entries(panels).forEach(([,panel])=> panel?.classList.remove('active'));
         if (tabs[which]) tabs[which].setAttribute('aria-selected','true');
-        if (panels[which]) panels[which].classList.add('active');
+                if (panels.final) panels.final.style.display = (which === 'final') ? '' : 'none';
+        if (panels.admin) panels.admin.style.display = (which === 'admin') ? '' : 'none';
+        // Hide top-bar Final Report button when on Admin page
+        const exportTopBtn = document.getElementById('final_export_top');
+        if (exportTopBtn){ exportTopBtn.style.display = (which === 'admin') ? 'none' : 'inline-flex'; }
         if (which === 'final' && finalModule) finalModule.focus();
         if (which === 'admin' && adminModule) adminModule.focus();
       }
@@ -3129,6 +3628,14 @@
       }
 
       activate(activeTab);
+      // Fallback: explicitly show the chosen panel even if activation short-circuited
+      if (activeTab === 'admin'){
+        if (adminPanelEl){ adminPanelEl.classList.add('active'); adminPanelEl.style.display = ''; }
+        if (finalPanelEl){ finalPanelEl.classList.remove('active'); finalPanelEl.style.display = 'none'; }
+      } else {
+        if (finalPanelEl){ finalPanelEl.classList.add('active'); finalPanelEl.style.display = ''; }
+        if (adminPanelEl){ adminPanelEl.classList.remove('active'); adminPanelEl.style.display = 'none'; }
+      }
 
       window.addEventListener('focus', ()=>{
         if (activeTab === 'final' && finalModule) finalModule.focus();
@@ -3147,6 +3654,12 @@
     }
   }
 })();
+
+
+
+
+
+
 
 
 
