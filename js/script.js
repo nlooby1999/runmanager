@@ -35,6 +35,50 @@
       : null;
     const SUPABASE_ENABLED = !!supabase;
 
+    // Handle Supabase email confirmation links (magic links) on redirect
+    // Some environments may be configured to send clickable confirmation links
+    // instead of 6‑digit OTP codes. When the user clicks the link, Supabase
+    // redirects back with tokens in the URL (e.g. #access_token=…&type=signup).
+    // We detect that case, finalize profile creation using any pending
+    // registration info we stored, then sign out and return to the login screen.
+    async function handleAuthRedirectIfPresent(){
+      if (!SUPABASE_ENABLED) return;
+      try{
+        const hash = (typeof location !== 'undefined') ? (location.hash || '') : '';
+        const search = (typeof location !== 'undefined') ? (location.search || '') : '';
+        const params = new URLSearchParams(hash && hash.startsWith('#') ? hash.slice(1) : (search || ''));
+        const type = params.get('type');
+        if (!type) return; // No auth redirect signals
+
+        // If Supabase already established a session from the URL, we can get the user
+        const { data } = await supabase.auth.getUser();
+        const authUser = data?.user || null;
+        if (!authUser) return;
+
+        // Use pending registration details saved before redirect (if present)
+        let pending = null;
+        try{ pending = JSON.parse(localStorage.getItem('drm_pending_reg') || 'null'); }catch{ pending = null; }
+        if (pending && pending.email && (String(pending.email).toLowerCase() === String(authUser.email || '').toLowerCase())){
+          try{
+            await supabase
+              .from('profiles')
+              .upsert({ user_id: authUser.id, full_name: pending.fullName || authUser.email || 'User', username: pending.username || (authUser.email ? authUser.email.split('@')[0] : authUser.id), depot_id: pending.depotId || null }, { onConflict: 'user_id' });
+          }catch(err){ console.error('Profile upsert (link) failed', err); }
+        }
+
+        // Clean the URL of tokens to avoid confusion on reload
+        try{ history.replaceState({}, document.title, location.pathname + location.search.replace(/([?&])type=[^&#]*(&|$)/,'$1').replace(/[?&]$/,'')); }catch{}
+        try{ if (location.hash) history.replaceState({}, document.title, location.pathname + location.search); }catch{}
+
+        // Notify and sign out to enforce admin approval flow
+        try{ alert('Email verified. Your account is pending admin approval.'); }catch{}
+        try{ localStorage.removeItem('drm_pending_reg'); }catch{}
+        try{ await supabase.auth.signOut(); }catch{}
+      }catch(err){
+        console.warn('Auth redirect handling error', err);
+      }
+    }
+
     // Ensure the admin Supabase status updates immediately on load
     // so it does not remain stuck at the initial "Checking Supabase..." label
     ;(function initialSupabaseStatus(){
@@ -84,6 +128,11 @@
         console.error('Supabase connectivity quick check exception', err);
       }
     })();
+
+    // Proactively process any auth redirect in the URL (magic link flow)
+    // before showing login overlays, so users who clicked the email link
+    // get a clear success path even if OTP is not enabled.
+    handleAuthRedirectIfPresent().catch(()=>{});
 
     const logoutBtn = document.getElementById('auth_logout');
 
@@ -718,8 +767,11 @@
               const { data: exists } = await supabase.from('profiles').select('username').eq('username', username).limit(1);
               if (Array.isArray(exists) && exists.length){ setRegError('Username already exists.'); regSubmit.disabled = false; return; }
             }catch{}
+            // Persist pending registration so magic-link confirmations can complete profile
+            try{ localStorage.setItem('drm_pending_reg', JSON.stringify({ email, username, fullName, depotId })); }catch{}
             // Create auth user via Supabase Auth (not confirmed yet)
-            const { data: signRes, error: signErr } = await supabase.auth.signUp({ email, password: pw, options: { data: { full_name: fullName, username, depot_id: depotId } } });
+            const redirectTo = (typeof location !== 'undefined') ? (location.origin + location.pathname) : undefined;
+            const { data: signRes, error: signErr } = await supabase.auth.signUp({ email, password: pw, options: { data: { full_name: fullName, username, depot_id: depotId }, emailRedirectTo: redirectTo } });
             if (signErr){ setRegError(signErr.message || 'Failed to create account.'); regSubmit.disabled = false; return; }
             pendingReg = { email, username, fullName, depotId };
             // Send OTP code to email (ensure Auth settings use Email OTP for signup)
@@ -757,6 +809,7 @@
                 .from('profiles')
                 .upsert({ user_id: data.user.id, full_name: fullNameFinal, username: usernameFinal, depot_id: depotIdFinal }, { onConflict: 'user_id' });
               if (profErr){ console.error('Profile upsert failed', profErr); }
+              try{ localStorage.removeItem('drm_pending_reg'); }catch{}
               alert('Email verified. Your account is pending admin approval.');
               // Sign out and return to login
               try{ await supabase.auth.signOut(); }catch{}
